@@ -1,0 +1,3 @@
+# Network Edition inputs and all analysis work stay outside version control.
+cache/
+var/

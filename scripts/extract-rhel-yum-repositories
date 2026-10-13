@@ -1,0 +1,236 @@
+#!/usr/bin/env python3
+"""Safely render RHEL yum repository definitions from a Zimbra installer tgz.
+
+The Zimbra installer helper is intentionally not sourced: its
+configurePackageServer function imports keys, writes /etc/yum.repos.d, and
+executes yum. This tool reads only its literal yum-repository heredocs.
+"""
+import argparse
+import configparser
+import hashlib
+import json
+import re
+import sys
+import tarfile
+from pathlib import Path
+
+
+FUNCTION_START = re.compile(r"^configurePackageServer\s*\(\)\s*\{")
+FUNCTION_END = re.compile(r"^}\s*$")
+HEREDOC_START = re.compile(
+    r"^\s*cat\s+(?P<operator>>>|>)\s*"
+    r"(?P<destination>/etc/yum\.repos\.d/[^\s]+)\s*<<\s*"
+    r"(?P<delimiter>[A-Za-z_][A-Za-z0-9_]*)\s*$"
+)
+PLATFORM_REPOSITORY = re.compile(
+    r'^\s*(?:el)?if\s+\[\s+\$PLATFORM\s+=\s+"(?P<platform>RHEL[0-9]+_64)"\s+\]'
+)
+REPOSITORY_VALUE = re.compile(r'^\s*repo="(?P<repository>[^"]+)"\s*$')
+VARIABLE = re.compile(r"\$(?:\{(?P<braced>[A-Za-z_][A-Za-z0-9_]*)\}|(?P<plain>[A-Za-z_][A-Za-z0-9_]*))")
+
+
+def configure_package_server_lines(source: str) -> list[str]:
+    """Return the function body, failing when the expected structure changes."""
+    lines = source.splitlines()
+    start = next((index for index, line in enumerate(lines) if FUNCTION_START.match(line)), None)
+    if start is None:
+        raise ValueError("configurePackageServer function was not found")
+    end = next(
+        (index for index in range(start + 1, len(lines)) if FUNCTION_END.match(lines[index])),
+        None,
+    )
+    if end is None:
+        raise ValueError("configurePackageServer function has no closing brace")
+    return lines[start + 1 : end]
+
+
+def rhel_repository_names(lines: list[str]) -> dict[str, str]:
+    """Read the source's explicit RHEL platform-to-repository mapping."""
+    result: dict[str, str] = {}
+    for index, line in enumerate(lines):
+        platform_match = PLATFORM_REPOSITORY.match(line)
+        if not platform_match:
+            continue
+        for candidate in lines[index + 1 : index + 4]:
+            repository_match = REPOSITORY_VALUE.match(candidate)
+            if repository_match:
+                result[platform_match.group("platform")] = repository_match.group("repository")
+                break
+    return result
+
+
+def is_network_condition(line: str) -> bool:
+    return "ZMTYPE_INSTALLABLE" in line and "NETWORK" in line
+
+
+def yum_heredocs(lines: list[str], include_network: bool) -> dict[str, str]:
+    """Collect yum repo heredocs, respecting the Network-only conditional."""
+    files: dict[str, str] = {}
+    conditions: list[bool] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        stripped = line.strip()
+        if re.match(r"^if\b", stripped):
+            conditions.append(is_network_condition(line))
+            index += 1
+            continue
+        if stripped == "fi":
+            if not conditions:
+                raise ValueError("unexpected fi while reading configurePackageServer")
+            conditions.pop()
+            index += 1
+            continue
+
+        match = HEREDOC_START.match(line)
+        if not match:
+            index += 1
+            continue
+        delimiter = match.group("delimiter")
+        body_start = index + 1
+        body_end = next(
+            (candidate for candidate in range(body_start, len(lines)) if lines[candidate] == delimiter),
+            None,
+        )
+        if body_end is None:
+            raise ValueError(f"unterminated heredoc for {match.group('destination')}")
+        if include_network or not any(conditions):
+            body = "\n".join(lines[body_start:body_end]) + "\n"
+            destination = match.group("destination")
+            files[destination] = body if match.group("operator") == ">" else files.get(destination, "") + body
+        index = body_end + 1
+    return files
+
+
+def substitute(template: str, values: dict[str, str]) -> str:
+    def replacement(match: re.Match[str]) -> str:
+        name = match.group("braced") or match.group("plain")
+        if name not in values:
+            raise ValueError(f"unsupported variable ${name} in yum repository heredoc")
+        return values[name]
+
+    return VARIABLE.sub(replacement, template)
+
+
+def repositories(files: dict[str, str], values: dict[str, str]) -> list[dict[str, str]]:
+    result: list[dict[str, str]] = []
+    for path, template in files.items():
+        parser = configparser.ConfigParser(interpolation=None)
+        parser.read_string(substitute(template, values))
+        for section in parser.sections():
+            result.append(
+                {
+                    "id": section,
+                    "name": parser.get(section, "name"),
+                    "baseurl": parser.get(section, "baseurl"),
+                    "repo_file": path,
+                }
+            )
+    return result
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def read_installer_helper(archive: Path) -> tuple[str, bytes]:
+    if archive.suffix != ".tgz":
+        raise ValueError(f"installer archive must have a .tgz suffix: {archive}")
+    archive_base = archive.name[: -len(".tgz")]
+    member_name = f"{archive_base}/util/utilfunc.sh"
+    with tarfile.open(archive, "r:gz") as tar:
+        member = tar.getmember(member_name)
+        member_file = tar.extractfile(member)
+        if member_file is None:
+            raise ValueError(f"archive member is not a regular file: {member_name}")
+        return member_name, member_file.read()
+
+
+def write_repository_files(files: dict[str, str], values: dict[str, str], output_directory: Path) -> list[str]:
+    output_directory.mkdir(parents=True, exist_ok=True)
+    written: list[str] = []
+    for source_path, template in files.items():
+        destination = output_directory / Path(source_path).name
+        destination.write_text(substitute(template, values), encoding="utf-8")
+        written.append(str(destination))
+    return written
+
+
+def main() -> int:
+    argument_parser = argparse.ArgumentParser(description=__doc__)
+    argument_parser.add_argument("installer_tgz", type=Path, help="Zimbra installer .tgz input")
+    argument_parser.add_argument("--platform", default="RHEL9_64", help="RHEL platform identifier (default: RHEL9_64)")
+    argument_parser.add_argument("--edition", choices=("network", "foss"), default="network", help="installer edition (default: network)")
+    argument_parser.add_argument("--package-server", help="override PACKAGE_SERVER; default is the helper's production default")
+    argument_parser.add_argument(
+        "--output-directory",
+        type=Path,
+        default=Path("yum.repos.d"),
+        help="directory for rendered .repo files (default: ./yum.repos.d)",
+    )
+    argument_parser.add_argument(
+        "--report",
+        type=Path,
+        help="write provenance JSON to this path (default: no report file)",
+    )
+    arguments = argument_parser.parse_args()
+
+    if not arguments.platform.startswith("RHEL"):
+        argument_parser.error("only RHEL platforms are supported")
+    archive = arguments.installer_tgz
+    member_name, source_bytes = read_installer_helper(archive)
+    lines = configure_package_server_lines(source_bytes.decode("utf-8"))
+    platform_repositories = rhel_repository_names(lines)
+    if arguments.platform not in platform_repositories:
+        argument_parser.error(f"platform {arguments.platform} has no RHEL repository mapping in {archive}")
+
+    default_server = next(
+        (line.split("=", 1)[1].strip().strip('"') for line in lines if line.strip().startswith("TMP_PACKAGE_SERVER=")),
+        None,
+    )
+    if not default_server:
+        raise ValueError("TMP_PACKAGE_SERVER assignment was not found")
+    values = {
+        "PACKAGE_SERVER": arguments.package_server or default_server,
+        "repo": platform_repositories[arguments.platform],
+    }
+    files = yum_heredocs(lines, arguments.edition == "network")
+    rendered_repositories = repositories(files, values)
+    written_files = write_repository_files(files, values, arguments.output_directory)
+    report = {
+        "schema_version": 1,
+        "method": "static-installer-repository-extraction",
+        "input": {
+            "archive_path": str(archive),
+            "archive_sha256": sha256_file(archive),
+            "installer_helper_member": member_name,
+            "installer_helper_sha256": hashlib.sha256(source_bytes).hexdigest(),
+        },
+        "assumptions": {
+            "platform": arguments.platform,
+            "edition": arguments.edition,
+            "use_zimbra_package_server": True,
+            "package_server": values["PACKAGE_SERVER"],
+        },
+        "repositories": rendered_repositories,
+        "rendered_files": written_files,
+    }
+    if arguments.report:
+        arguments.report.parent.mkdir(parents=True, exist_ok=True)
+        arguments.report.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    print(f"Rendered {len(written_files)} yum repository file(s) in {arguments.output_directory}")
+    if arguments.report:
+        print(f"Wrote provenance report to {arguments.report}")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (OSError, ValueError, KeyError, UnicodeDecodeError, configparser.Error, tarfile.TarError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        raise SystemExit(2)

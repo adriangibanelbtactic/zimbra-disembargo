@@ -1,0 +1,5 @@
+# NE inputs and generated analysis output must never enter a Docker build
+# context. They are supplied only as explicit runtime mounts.
+cache/
+var/
+.git/
