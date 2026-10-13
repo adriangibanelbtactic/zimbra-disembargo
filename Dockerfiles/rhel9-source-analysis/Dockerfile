@@ -12,6 +12,7 @@ RUN rpm --import https://files.zimbra.com/downloads/security/public-sha-256.key 
     && dnf --assumeyes install \
         bash \
         ca-certificates \
+        cpio \
         diffutils \
         dnf-plugins-core \
         file \

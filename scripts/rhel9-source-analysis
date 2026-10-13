@@ -35,6 +35,10 @@ Commands:
   build   Build the Rocky Linux 9 analysis image for the invoking user.
   start   Start the named analysis container (builds the image when needed).
   shell   Open an interactive shell in the running analysis container.
+  srpm-diff <package> [--after <EVR>]
+          Compare the latest, or a selected, public SRPM with its predecessor.
+  srpm-diff --interactive
+          Select a package and two public SRPM versions in a terminal UI.
   status  Show the named container's state.
   stop    Stop and remove the named analysis container; retain host data.
 
@@ -122,6 +126,11 @@ shell() {
     docker exec --interactive --tty "${CONTAINER}" bash -l
 }
 
+srpm_diff() {
+    docker exec --interactive --tty "${CONTAINER}" \
+        /project/scripts/rhel9-srpm-diff "$@"
+}
+
 status() {
     docker container inspect --format \
         '{{.Name}}: running={{.State.Running}} image={{.Config.Image}}' \
@@ -132,11 +141,17 @@ stop() {
     docker rm --force "${CONTAINER}"
 }
 
-case "${1:-}" in
+command=${1:-}
+if [[ $# -gt 0 ]]; then
+    shift
+fi
+
+case "${command}" in
     cache) cache ;;
     build) build ;;
     start) start ;;
     shell) shell ;;
+    srpm-diff) srpm_diff "$@" ;;
     status) status ;;
     stop) stop ;;
     *) usage; exit 2 ;;

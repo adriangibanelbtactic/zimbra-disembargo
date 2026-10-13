@@ -1,0 +1,392 @@
+#!/usr/bin/env python3
+"""Interactively compare two public Zimbra RHEL 9 source RPMs.
+
+The tool intentionally queries only the public zimbra-1010-oss repository.
+Network Edition repositories are not considered source-package inputs.
+"""
+import argparse
+import curses
+import hashlib
+import json
+import re
+import shutil
+import subprocess
+import sys
+from collections import defaultdict
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from functools import cmp_to_key
+from pathlib import Path
+from typing import Callable, Iterable, Optional
+
+try:
+    import rpm
+except ImportError:  # pragma: no cover - available in the analysis image
+    rpm = None
+
+
+REPOSITORY = "zimbra-1010-oss"
+QUERY_FORMAT = "%{name}|%{epoch}|%{version}|%{release}"
+ARCHIVE_SUFFIXES = (
+    ".tar",
+    ".tar.bz2",
+    ".tar.gz",
+    ".tar.xz",
+    ".tbz",
+    ".tbz2",
+    ".tgz",
+    ".txz",
+    ".zip",
+)
+
+
+class AnalysisError(Exception):
+    """A command or package input could not be processed safely."""
+
+
+@dataclass(frozen=True)
+class SourcePackage:
+    name: str
+    epoch: str
+    version: str
+    release: str
+
+    def __post_init__(self) -> None:
+        if self.epoch in ("", "(none)"):
+            object.__setattr__(self, "epoch", "0")
+
+    @property
+    def evr(self) -> str:
+        prefix = "" if self.epoch in ("", "0", "(none)") else f"{self.epoch}:"
+        return f"{prefix}{self.version}-{self.release}"
+
+    @property
+    def nvr(self) -> str:
+        return f"{self.name}-{self.version}-{self.release}"
+
+    @property
+    def filename(self) -> str:
+        return f"{self.nvr}.src.rpm"
+
+
+def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(command, check=True, text=True, **kwargs)
+
+
+def compare_versions(left: SourcePackage, right: SourcePackage) -> int:
+    if rpm is not None:
+        return rpm.labelCompare((left.epoch, left.version, left.release), (right.epoch, right.version, right.release))
+    return (left.evr > right.evr) - (left.evr < right.evr)
+
+
+def source_packages(repository: str) -> dict[str, list[SourcePackage]]:
+    try:
+        completed = run(
+            [
+                "dnf",
+                "repoquery",
+                f"--repo={repository}",
+                "--arch=src",
+                f"--qf={QUERY_FORMAT}",
+            ],
+            capture_output=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise AnalysisError(f"Could not query source packages from {repository}: {error}") from error
+
+    packages: dict[str, dict[tuple[str, str, str], SourcePackage]] = defaultdict(dict)
+    for line in completed.stdout.splitlines():
+        fields = line.split("|")
+        if len(fields) != 4:
+            raise AnalysisError(f"Unexpected dnf repoquery output: {line!r}")
+        package = SourcePackage(*fields)
+        packages[package.name][(package.epoch, package.version, package.release)] = package
+
+    comparable = {
+        name: sorted(versions.values(), key=cmp_to_key(compare_versions))
+        for name, versions in packages.items()
+        if len(versions) >= 2
+    }
+    if not comparable:
+        raise AnalysisError(f"No source packages with two or more versions are available in {repository}")
+    return dict(sorted(comparable.items()))
+
+
+def draw_selector(
+    screen: "curses._CursesWindow", title: str, values: list[object], label: Callable[[object], str]
+) -> Optional[object]:
+    """Select an item with an incremental case-insensitive filter."""
+    query = ""
+    selected = 0
+    offset = 0
+    while True:
+        filtered = [value for value in values if query.lower() in label(value).lower()]
+        if filtered:
+            selected = min(selected, len(filtered) - 1)
+        else:
+            selected = 0
+
+        screen.erase()
+        height, width = screen.getmaxyx()
+        screen.addnstr(0, 0, title, max(0, width - 1), curses.A_BOLD)
+        screen.addnstr(1, 0, "Type to filter; Up/Down select; Enter confirm; q cancel.", max(0, width - 1))
+        screen.addnstr(2, 0, f"Filter: {query}", max(0, width - 1))
+        screen.addnstr(3, 0, f"{len(filtered)} matching item(s)", max(0, width - 1))
+        visible = max(1, height - 5)
+        if selected < offset:
+            offset = selected
+        if selected >= offset + visible:
+            offset = selected - visible + 1
+        for row, value in enumerate(filtered[offset : offset + visible], start=4):
+            attribute = curses.A_REVERSE if offset + row - 4 == selected else curses.A_NORMAL
+            screen.addnstr(row, 0, label(value), max(0, width - 1), attribute)
+        screen.refresh()
+
+        key = screen.get_wch()
+        if key in ("\n", "\r", curses.KEY_ENTER):
+            return filtered[selected] if filtered else None
+        if key in ("q", "Q", "\x1b"):
+            return None
+        if key in (curses.KEY_UP, "k") and filtered:
+            selected = max(0, selected - 1)
+        elif key in (curses.KEY_DOWN, "j") and filtered:
+            selected = min(len(filtered) - 1, selected + 1)
+        elif key == curses.KEY_PPAGE and filtered:
+            selected = max(0, selected - visible)
+        elif key == curses.KEY_NPAGE and filtered:
+            selected = min(len(filtered) - 1, selected + visible)
+        elif key in (curses.KEY_BACKSPACE, "\b", "\x7f"):
+            query = query[:-1]
+            offset = 0
+        elif isinstance(key, str) and key.isprintable():
+            query += key
+            offset = 0
+
+
+def select_packages(packages: dict[str, list[SourcePackage]]) -> Optional[tuple[SourcePackage, SourcePackage]]:
+    def choose(screen: "curses._CursesWindow") -> Optional[tuple[SourcePackage, SourcePackage]]:
+        names = list(packages)
+        name = draw_selector(screen, "Select source package", names, str)
+        if name is None:
+            return None
+        versions = packages[str(name)]
+        before = draw_selector(screen, f"Select BEFORE version: {name}", versions, lambda item: item.evr)
+        if before is None:
+            return None
+        after_versions = [item for item in versions if compare_versions(item, before) > 0]
+        if not after_versions:
+            return None
+        after = draw_selector(screen, f"Select AFTER version: {name}", after_versions, lambda item: item.evr)
+        return None if after is None else (before, after)
+
+    return curses.wrapper(choose)
+
+
+def safe_name(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", value)
+
+
+def unique_result_directory(root: Path, before: SourcePackage, after: SourcePackage) -> Path:
+    stem = f"{safe_name(before.evr)}__to__{safe_name(after.evr)}"
+    candidate = root / safe_name(before.name) / stem
+    suffix = 2
+    while candidate.exists():
+        candidate = root / safe_name(before.name) / f"{stem}-{suffix}"
+        suffix += 1
+    candidate.mkdir(parents=True)
+    return candidate
+
+
+def download_source(package: SourcePackage, repository: str, destination: Path) -> Path:
+    destination.mkdir(parents=True)
+    try:
+        run(
+            [
+                "dnf",
+                "download",
+                "--source",
+                f"--repo={repository}",
+                f"--downloaddir={destination}",
+                package.nvr,
+            ]
+        )
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise AnalysisError(f"Could not download {package.nvr} from {repository}: {error}") from error
+
+    downloaded = list(destination.glob("*.src.rpm"))
+    if len(downloaded) != 1:
+        raise AnalysisError(f"Expected one downloaded SRPM for {package.nvr}, found {len(downloaded)}")
+    source_rpm = downloaded[0]
+    try:
+        queried = run(["rpm", "-qp", "--qf", QUERY_FORMAT, str(source_rpm)], capture_output=True).stdout
+        name, epoch, version, release = queried.split("|")
+    except (OSError, ValueError, subprocess.CalledProcessError) as error:
+        raise AnalysisError(f"Could not validate downloaded SRPM {source_rpm}: {error}") from error
+    if SourcePackage(name, epoch, version, release) != package:
+        raise AnalysisError(f"Downloaded SRPM does not match selection: {source_rpm}")
+    try:
+        run(["rpm", "--checksig", str(source_rpm)], capture_output=True)
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise AnalysisError(f"SRPM signature validation failed for {source_rpm}: {error}") from error
+    return source_rpm
+
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for block in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def extract_srpm(source_rpm: Path, destination: Path) -> None:
+    destination.mkdir()
+    try:
+        with subprocess.Popen(["rpm2cpio", str(source_rpm)], stdout=subprocess.PIPE) as converter:
+            assert converter.stdout is not None
+            with subprocess.Popen(
+                ["cpio", "--quiet", "--extract", "--make-directories", "--no-absolute-filenames"],
+                cwd=destination,
+                stdin=converter.stdout,
+            ) as cpio:
+                converter.stdout.close()
+                cpio.wait()
+            converter.wait()
+            if converter.returncode != 0 or cpio.returncode != 0:
+                raise AnalysisError(f"Could not extract {source_rpm}")
+    except OSError as error:
+        raise AnalysisError(f"Could not extract {source_rpm}: {error}") from error
+
+
+def archive_path(path: Path) -> bool:
+    return path.is_file() and path.name.lower().endswith(ARCHIVE_SUFFIXES)
+
+
+def comparison_view(extracted: Path, destination: Path) -> list[str]:
+    """Create a readable comparison tree, expanding common source archives."""
+    warnings: list[str] = []
+    destination.mkdir()
+    for source in sorted(extracted.rglob("*")):
+        relative = source.relative_to(extracted)
+        target = destination / relative
+        if source.is_dir():
+            target.mkdir(exist_ok=True)
+            continue
+        if source.is_symlink():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.symlink_to(source.readlink())
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if not archive_path(source):
+            shutil.copy2(source, target)
+            continue
+        expanded = destination / f"{relative}.contents"
+        expanded.mkdir(parents=True, exist_ok=True)
+        command = ["unzip", "-q", str(source), "-d", str(expanded)] if source.name.lower().endswith(".zip") else [
+            "tar", "--extract", "--file", str(source), "--directory", str(expanded), "--no-same-owner", "--no-same-permissions"
+        ]
+        completed = subprocess.run(command, text=True, capture_output=True)
+        if completed.returncode:
+            shutil.copy2(source, target)
+            warnings.append(f"Could not expand {relative}: {completed.stderr.strip()}")
+    return warnings
+
+
+def write_diff(before: Path, after: Path, destination: Path) -> bool:
+    completed = subprocess.run(
+        [
+            "git", "diff", "--no-index", "--no-ext-diff", "--no-renames",
+            "--src-prefix=before/", "--dst-prefix=after/", str(before), str(after),
+        ],
+        text=True,
+        capture_output=True,
+    )
+    if completed.returncode not in (0, 1):
+        raise AnalysisError(f"git diff failed: {completed.stderr.strip()}")
+    destination.write_text(completed.stdout, encoding="utf-8")
+    return completed.returncode == 1
+
+
+def compare(before: SourcePackage, after: SourcePackage, repository: str, results_root: Path) -> Path:
+    result = unique_result_directory(results_root, before, after)
+    srpms = result / "srpms"
+    srpms.mkdir()
+    before_rpm = download_source(before, repository, srpms / "before")
+    after_rpm = download_source(after, repository, srpms / "after")
+    before_extracted, after_extracted = result / "before-extracted", result / "after-extracted"
+    extract_srpm(before_rpm, before_extracted)
+    extract_srpm(after_rpm, after_extracted)
+    before_view, after_view = result / "before-view", result / "after-view"
+    warnings = comparison_view(before_extracted, before_view)
+    warnings.extend(comparison_view(after_extracted, after_view))
+    different = write_diff(before_view, after_view, result / "changes.diff")
+    manifest = {
+        "schema_version": 1,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "repository": repository,
+        "before": {"name": before.name, "epoch": before.epoch, "version": before.version, "release": before.release, "srpm": str(before_rpm.relative_to(result)), "sha256": sha256(before_rpm)},
+        "after": {"name": after.name, "epoch": after.epoch, "version": after.version, "release": after.release, "srpm": str(after_rpm.relative_to(result)), "sha256": sha256(after_rpm)},
+        "comparison": {"diff": "changes.diff", "different": different, "warnings": warnings},
+    }
+    (result / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    return result
+
+
+def selected_after(versions: list[SourcePackage], requested: Optional[str]) -> SourcePackage:
+    if requested is None:
+        return versions[-1]
+    matches = [package for package in versions if requested in (package.version, package.evr)]
+    if not matches:
+        raise AnalysisError(f"No version matching {requested!r} is available")
+    if len(matches) > 1:
+        choices = ", ".join(package.evr for package in matches)
+        raise AnalysisError(f"Version {requested!r} is ambiguous; use an exact EVR: {choices}")
+    return matches[0]
+
+
+def automatic_selection(
+    packages: dict[str, list[SourcePackage]], package_name: str, requested_after: Optional[str]
+) -> tuple[SourcePackage, SourcePackage]:
+    if package_name not in packages:
+        raise AnalysisError(f"No public SRPM comparison candidates are available for {package_name}")
+    versions = packages[package_name]
+    after = selected_after(versions, requested_after)
+    earlier = [candidate for candidate in versions if compare_versions(candidate, after) < 0]
+    if not earlier:
+        raise AnalysisError(f"{after.evr} has no earlier available SRPM for {package_name}")
+    return earlier[-1], after
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("package", nargs="?", help="package name; defaults to its latest available SRPM")
+    parser.add_argument("--after", metavar="EVR", help="compare this version with its immediate predecessor")
+    parser.add_argument("--interactive", action="store_true", help="select package and versions in a terminal UI")
+    parser.add_argument("--repo", default=REPOSITORY, help=f"public source repository (default: {REPOSITORY})")
+    parser.add_argument("--results-directory", type=Path, default=Path("/results/srpm-diffs"), help="directory for durable comparison results")
+    arguments = parser.parse_args()
+    if arguments.after and not arguments.package:
+        parser.error("--after requires a package name")
+    if arguments.interactive and (arguments.package or arguments.after):
+        parser.error("--interactive cannot be combined with a package name or --after")
+    if not arguments.interactive and not arguments.package:
+        parser.error("a package name is required unless --interactive is used")
+    try:
+        packages = source_packages(arguments.repo)
+        selected = select_packages(packages) if arguments.interactive else automatic_selection(
+            packages, arguments.package, arguments.after
+        )
+        if selected is None:
+            print("No SRPM comparison selected.")
+            return 0
+        result = compare(*selected, arguments.repo, arguments.results_directory)
+    except AnalysisError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 1
+    print(f"Comparison written to {result}")
+    print(f"Review {result / 'changes.diff'} and {result / 'manifest.json'}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

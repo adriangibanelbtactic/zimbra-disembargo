@@ -87,6 +87,57 @@ Always name the public repository explicitly when retrieving an SRPM. This
 keeps binary-only Network Edition repositories out of source-package selection
 and makes the source origin evident in command history and later evidence.
 
+### Source comparison
+
+Start the container, then supply a package name from the host. This is the
+normal non-interactive workflow: it compares the latest public SRPM with the
+immediately preceding public SRPM for that package.
+
+```sh
+scripts/rhel9-source-analysis start
+scripts/rhel9-source-analysis srpm-diff zimbra-apache-components
+```
+
+To compare a particular public version with its immediate predecessor, name its
+exact EVR (epoch, version, and release) with `--after`:
+
+```sh
+scripts/rhel9-source-analysis srpm-diff zimbra-apache-components \
+  --after 2.0.12-1zimbra8.8b1.el9
+```
+
+`--after` also accepts a version alone when that version is unique. It rejects
+ambiguous values rather than choosing a release silently.
+
+The terminal UI is retained for manual investigation, such as choosing a
+non-adjacent pair of versions:
+
+```sh
+scripts/rhel9-source-analysis srpm-diff --interactive
+```
+
+Its first screen lists public source package names with at least two available
+SRPM versions; package versions do not appear until after a name is selected.
+The following screens select the older (BEFORE) version and a later (AFTER)
+version. Type to filter, use the arrow keys (or `j` and `k`) to move, press
+Enter to select, and press `q` to cancel.
+
+The UI queries only `zimbra-1010-oss`, downloads the exact selected source RPMs
+with `dnf download --source`, validates their RPM signatures, and writes a new
+comparison directory below `/results/srpm-diffs` (the host's
+`var/rhel9-source-analysis/results/srpm-diffs` by default). It retains the
+downloaded RPMs and their direct extraction, expands common source archives to
+make the comparison readable, and writes:
+
+- `changes.diff`: a no-index Git diff of the extracted source views;
+- `manifest.json`: selected versions, SRPM SHA-256 values, source repository,
+  timestamp, and any archive-expansion warnings; and
+- `before-*` and `after-*` directories containing the raw SRPM extraction and
+  the readable comparison views.
+
+Existing results are never overwritten: a repeated selection receives a numeric
+suffix. The UI does not query `1000-ne` or `1010-ne` for source packages.
+
 ## Current boundary and next evidence to record
 
 The supported input boundary is one verified RHEL 9 NE tarball. The next step
