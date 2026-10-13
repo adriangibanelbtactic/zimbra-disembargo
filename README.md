@@ -100,9 +100,11 @@ specific documented operation requires them. In particular, Network Edition
 materials should remain local and must not be baked into images or committed to
 this repository.
 
-The Dockerfiles and the exact build/run commands are not included yet. This
-section defines the intended host setup and isolation model; commands will be
-added alongside the container implementation.
+### RHEL 9 source-package comparisons
+
+The RHEL 9 analysis container can download and compare public Zimbra source
+RPMs. For the normal package-name workflow and a manual TUI walkthrough in a
+fresh work directory, see [RHEL 9 source-package analysis environment](docs/analysis-methods/rhel-source-package-environment.md).
 
 ## What open source means here
 

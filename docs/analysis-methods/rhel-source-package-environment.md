@@ -122,6 +122,65 @@ The following screens select the older (BEFORE) version and a later (AFTER)
 version. Type to filter, use the arrow keys (or `j` and `k`) to move, press
 Enter to select, and press `q` to cancel.
 
+#### Manual TUI walkthrough in a new work directory
+
+Run this from the repository checkout in an interactive terminal. It creates a
+new host directory for this comparison session, rather than using the default
+`var/rhel9-source-analysis` directory:
+
+```sh
+export ZIMBRA_ANALYSIS_WORK="$PWD/rhel9-srpm-review"
+mkdir -p "$ZIMBRA_ANALYSIS_WORK"
+```
+
+The analysis container has a fixed name and its bind mounts are chosen when it
+is created. If it already exists, remove that container first so the new work
+directory is mounted. This does not remove any host work directory, cache, or
+previous results:
+
+```sh
+if scripts/rhel9-source-analysis status >/dev/null 2>&1; then
+  scripts/rhel9-source-analysis stop
+fi
+```
+
+Build the current image, start a container with the new mount, and open the
+manual selector:
+
+```sh
+scripts/rhel9-source-analysis build
+scripts/rhel9-source-analysis start
+scripts/rhel9-source-analysis srpm-diff --interactive
+```
+
+On the first screen, type enough of the package name to filter it, select the
+package, then select its BEFORE and AFTER source-package versions. The AFTER
+screen deliberately contains only versions newer than the selected BEFORE
+version. Press `q` at any selection screen to cancel without downloading an
+SRPM.
+
+When the comparison completes, inspect the result path printed by the tool.
+For the work directory above, results are below
+`rhel9-srpm-review/results/srpm-diffs`. For example:
+
+```sh
+find "$ZIMBRA_ANALYSIS_WORK/results/srpm-diffs" -name manifest.json -printf '%h\n'
+less "$ZIMBRA_ANALYSIS_WORK/results/srpm-diffs"/*/*/changes.diff
+jq . "$ZIMBRA_ANALYSIS_WORK/results/srpm-diffs"/*/*/manifest.json
+```
+
+`changes.diff` is the readable source comparison. `manifest.json` records the
+selected versions, repository, timestamp, SRPM SHA-256 values, and any source
+archive expansion warnings. The same result directory retains the downloaded
+SRPMs and the direct and expanded extraction trees for follow-up inspection.
+
+Stop the disposable container when finished; the new host work directory and
+its results remain available:
+
+```sh
+scripts/rhel9-source-analysis stop
+```
+
 The UI queries only `zimbra-1010-oss`, downloads the exact selected source RPMs
 with `dnf download --source`, validates their RPM signatures, and writes a new
 comparison directory below `/results/srpm-diffs` (the host's
