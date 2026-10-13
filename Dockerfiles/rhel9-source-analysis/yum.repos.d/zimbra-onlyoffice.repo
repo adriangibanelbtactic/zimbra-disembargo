@@ -1,0 +1,5 @@
+[zimbra-onlyoffice]
+name=Zimbra Onlyoffice RPM Repository
+baseurl=https://repo.zimbra.com/rpm/onlyoffice-1010/rhel9
+gpgcheck=1
+enabled=1

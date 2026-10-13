@@ -47,10 +47,45 @@ analysis work directory.
 
 The console runs as the invoking host UID/GID rather than root. The default
 `disembargo` user has passwordless `sudo` for exploratory package installation
-or system inspection. It has RPM, `rpmbuild`, `curl`, `file`, `jq`, archive
-tools, and standard comparison tools. Network access is intentionally enabled
-during this exploratory phase so public SRPM locations can be investigated. No
-source package is downloaded by this environment automatically.
+or system inspection. It has RPM, `rpmbuild`, the `dnf download` plugin, `file`,
+`jq`, archive tools, and standard comparison tools. Network access is
+intentionally enabled during this exploratory phase so public SRPM locations can
+be investigated. No source package is downloaded by this environment
+automatically.
+
+## Package repositories and SRPM access
+
+The image copies the RHEL 9 repository definitions statically rendered from the
+verified installer into `/etc/yum.repos.d`, imports Zimbra's RHEL 9 SHA-256
+package-signing key, verifies its installed RPM key ID
+`gpg-pubkey-7c66bd84-6583eafa`, and then runs `dnf --assumeyes update` while
+building the image. (`dnf` is the EL 9 implementation of the familiar `yum`
+command.) Thus the update refreshes metadata from the configured Zimbra and
+Rocky repositories and updates packages already present in the base image;
+package signatures remain checked by each repository's `gpgcheck=1` setting.
+
+`dnf-plugins-core` supplies `dnf download`. SRPMs are not enabled by a special
+DNF switch: an RPM repository publishes them as ordinary packages with the
+`src` architecture. The public `zimbra-1010-oss` repository is enabled in the
+image and its metadata contains such records, so `dnf download --source` can
+select and fetch them. Network Edition repositories, including
+`zimbra-1000-network` and `zimbra-1010-network` (whose URLs contain `1000-ne`
+and `1010-ne`) are configured for their binary packages but are not considered
+SRPM sources.
+
+For example, download a source RPM to the writable analysis directory and list
+its contents:
+
+```sh
+mkdir -p /work/srpms
+dnf download --source --repo=zimbra-1010-oss --downloaddir=/work/srpms \
+  zimbra-altermime
+rpm -qpl /work/srpms/zimbra-altermime-*.src.rpm
+```
+
+Always name the public repository explicitly when retrieving an SRPM. This
+keeps binary-only Network Edition repositories out of source-package selection
+and makes the source origin evident in command history and later evidence.
 
 ## Current boundary and next evidence to record
 

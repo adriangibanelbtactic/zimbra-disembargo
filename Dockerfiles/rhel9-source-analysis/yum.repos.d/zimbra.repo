@@ -1,0 +1,29 @@
+[zimbra]
+name=Zimbra RPM Repository
+baseurl=https://repo.zimbra.com/rpm/87/rhel9
+gpgcheck=1
+enabled=1
+
+[zimbra-1000-oss]
+name=Zimbra New RPM Repository
+baseurl=https://repo.zimbra.com/rpm/1000/rhel9
+gpgcheck=1
+enabled=1
+
+[zimbra-1010-oss]
+name=Zimbra 1010 OSS RPM Repository
+baseurl=https://repo.zimbra.com/rpm/1010/rhel9
+gpgcheck=1
+enabled=1
+
+[zimbra-1000-network]
+name=Zimbra New RPM Repository
+baseurl=https://repo.zimbra.com/rpm/1000-ne/rhel9
+gpgcheck=1
+enabled=1
+
+[zimbra-1010-network]
+name=Zimbra 1010 NW RPM Repository
+baseurl=https://repo.zimbra.com/rpm/1010-ne/rhel9
+gpgcheck=1
+enabled=1
