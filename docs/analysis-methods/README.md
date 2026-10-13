@@ -92,6 +92,9 @@ produce file-level comparison reports with provenance. It must not conflate
 pseudo-source findings with either official source-package evidence or direct
 binary analysis.
 
+The initial Ubuntu 24.04 Debian-package acquisition and inspection environment
+is documented in [Ubuntu 24.04 pseudo-source package environment](ubuntu24-pseudo-source-package-environment.md).
+
 ## Cross-method reporting
 
 Reports should identify the evidence method first, then describe the release

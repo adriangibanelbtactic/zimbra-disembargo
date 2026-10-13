@@ -1,3 +1,7 @@
 # Network Edition inputs and all analysis work stay outside version control.
 cache/
 var/
+
+# Python validation artefacts.
+__pycache__/
+*.pyc
