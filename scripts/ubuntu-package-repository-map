@@ -1,0 +1,106 @@
+#!/usr/bin/env python3
+"""Merge per-Ubuntu-series non-patch package catalogues into an availability map."""
+import argparse
+import json
+import sys
+from pathlib import Path
+from typing import Any
+
+
+CATALOGUE_SCHEMA_VERSION = 1
+MAP_SCHEMA_VERSION = 1
+
+
+class MapError(Exception):
+    """A catalogue input or requested output is invalid."""
+
+
+def read_catalogue(path: Path) -> dict[str, Any]:
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise MapError(f"Could not read package catalogue {path}: {error}") from error
+    if document.get("schema_version") != CATALOGUE_SCHEMA_VERSION:
+        raise MapError(f"Unsupported package catalogue schema in {path}")
+    if not isinstance(document.get("source_indexes"), list) or not isinstance(document.get("packages"), list):
+        raise MapError(f"Package catalogue {path} is malformed")
+    return document
+
+
+def parse_input(value: str) -> tuple[str, Path]:
+    series, separator, raw_path = value.partition("=")
+    if not separator or series not in {"18", "20", "22", "24"} or not raw_path:
+        raise MapError(f"Catalogue input must be SERIES=PATH for series 18, 20, 22, or 24: {value!r}")
+    return series, Path(raw_path)
+
+
+def availability_map(catalogues: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    merged: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+    for series, catalogue in sorted(catalogues.items(), key=lambda item: int(item[0])):
+        for package in catalogue["packages"]:
+            try:
+                name = package["name"]
+                versions = package["versions"]
+            except (KeyError, TypeError) as error:
+                raise MapError(f"Package catalogue for Ubuntu {series} is malformed") from error
+            if not isinstance(name, str) or not isinstance(versions, list):
+                raise MapError(f"Package catalogue for Ubuntu {series} is malformed")
+            for version in versions:
+                try:
+                    number = version["version"]
+                    architecture = version["architecture"]
+                    sources = version["sources"]
+                except (KeyError, TypeError) as error:
+                    raise MapError(f"Package catalogue for Ubuntu {series} is malformed") from error
+                if not isinstance(number, str) or not isinstance(architecture, str) or not isinstance(sources, list):
+                    raise MapError(f"Package catalogue for Ubuntu {series} is malformed")
+                merged.setdefault((name, number, architecture), []).append(
+                    {"ubuntu_series": series, "sources": sorted(sources)}
+                )
+    return {
+        "schema_version": MAP_SCHEMA_VERSION,
+        "method": "ubuntu-non-patch-package-repository-map",
+        "catalogues": {
+            f"ubuntu{series}": {
+                "catalogue": catalogue.get("catalogue_path"),
+                "created_at": catalogue.get("created_at"),
+                "source_indexes": catalogue["source_indexes"],
+                "package_count": catalogue.get("package_count"),
+            }
+            for series, catalogue in sorted(catalogues.items(), key=lambda item: int(item[0]))
+        },
+        "packages": [
+            {
+                "name": name,
+                "version": version,
+                "architecture": architecture,
+                "availability": availability,
+            }
+            for (name, version, architecture), availability in sorted(merged.items())
+        ],
+    }
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--catalogue", action="append", required=True, metavar="SERIES=PATH", help="catalogue input; repeat for each Ubuntu series")
+    parser.add_argument("--output", type=Path, required=True, help="availability-map JSON output")
+    arguments = parser.parse_args()
+    try:
+        inputs = [parse_input(value) for value in arguments.catalogue]
+        series = [item[0] for item in inputs]
+        if len(set(series)) != len(series):
+            raise MapError("Each Ubuntu series may be supplied only once")
+        catalogues = {name: {**read_catalogue(path), "catalogue_path": str(path)} for name, path in inputs}
+        document = availability_map(catalogues)
+        arguments.output.parent.mkdir(parents=True, exist_ok=True)
+        arguments.output.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+    except MapError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 1
+    print(f"Repository version map written to {arguments.output}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

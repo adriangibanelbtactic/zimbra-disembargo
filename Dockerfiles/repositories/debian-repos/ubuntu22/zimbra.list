@@ -1,0 +1,5 @@
+deb [arch=amd64 signed-by=/etc/apt/trusted.gpg.d/zimbra.gpg] https://repo.zimbra.com/apt/87 jammy zimbra
+deb [arch=amd64 signed-by=/etc/apt/trusted.gpg.d/zimbra.gpg] https://repo.zimbra.com/apt/1000 jammy zimbra
+deb [arch=amd64 signed-by=/etc/apt/trusted.gpg.d/zimbra.gpg] https://repo.zimbra.com/apt/1010 jammy zimbra
+deb [arch=amd64 signed-by=/etc/apt/trusted.gpg.d/zimbra.gpg] https://repo.zimbra.com/apt/1000-ne jammy zimbra
+deb [arch=amd64 signed-by=/etc/apt/trusted.gpg.d/zimbra.gpg] https://repo.zimbra.com/apt/1010-ne jammy zimbra

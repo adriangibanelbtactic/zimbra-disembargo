@@ -27,6 +27,35 @@ Its writable working and results directory is
 Git-ignored. The checkout is a read-only container mount. `stop` removes only
 this workflow's named container.
 
+### Ubuntu repository series
+
+Ubuntu 24.04 (`noble`) remains the default repository series.  The Ubuntu 24
+analysis image can also query the Zimbra `bionic`, `focal`, and `jammy`
+repositories without building a second image.  Pass `--ubuntu-series` to
+`start`, `shell`, `catalog`, `deb-inspect`, or `source-extract`:
+
+```sh
+# Select only Zimbra's Ubuntu 18.04 (bionic) package indexes.
+scripts/ubuntu24-debian-non-patch-packages-pseudo-code-analysis \
+  catalog --ubuntu-series 18
+
+# Inspect using the resulting Ubuntu 18 catalogue.
+scripts/ubuntu24-debian-non-patch-packages-pseudo-code-analysis \
+  deb-inspect zimbra-common-core-jar --ubuntu-series 18
+```
+
+The launcher removes the active Zimbra APT lists, copies exactly one checked-in
+series profile, removes old Zimbra package-index files, and then runs
+`apt-get update`.  Thus `--ubuntu-series 18` never combines `bionic` package
+indexes with `focal`, `jammy`, or `noble` indexes.  Ubuntu base-image indexes
+may still be present, but the catalogue accepts only `repo.zimbra.com/apt/`
+indexes.
+
+Non-default results are isolated under `results/ubuntu18/`,
+`results/ubuntu20/`, or `results/ubuntu22/`; default Ubuntu 24 results retain
+their existing paths.  Do not run two commands using different series against
+the same named container at the same time.
+
 ## Package catalogue
 
 Build the package catalogue once after `start`:
@@ -56,6 +85,18 @@ scripts/ubuntu24-debian-non-patch-packages-pseudo-code-analysis catalog
 # or rebuild it immediately before an inspection
 scripts/ubuntu24-debian-non-patch-packages-pseudo-code-analysis deb-inspect --refresh-catalog
 ```
+
+To catalogue every supported series and write one LLM-readable version/source
+map, use:
+
+```sh
+scripts/ubuntu24-debian-non-patch-packages-pseudo-code-analysis catalog-availability
+```
+
+It writes `results/ubuntu-repository-version-map.json`.  Each entry records a
+package name, exact Debian version, architecture, Ubuntu series, and the exact
+Zimbra APT `Packages` index URI(s) that supplied it.  The per-series catalogues
+used to produce the map are retained alongside it.
 
 ## Debian package inspection
 

@@ -11,26 +11,55 @@ readonly WORK_DIR="${REPOSITORY_DIR}/var/ubuntu24-debian-non-patch-packages-pseu
 
 usage() {
     cat <<'EOF'
-Usage: scripts/ubuntu24-debian-non-patch-packages-pseudo-code-analysis <command>
+Usage: scripts/ubuntu24-debian-non-patch-packages-pseudo-code-analysis <command> [--ubuntu-series 18|20|22|24]
 
 Commands:
   build    Build the Ubuntu 24.04 analysis image for the invoking user.
-  start    Start the named analysis container (builds the image when needed).
-  shell    Open an interactive shell in the running analysis container.
+  start    Start the named Ubuntu 24.04 analysis container (builds the image when needed).
+  shell    Open an interactive shell after selecting its APT repository series.
   catalog
-           Record non-patch packages indexed by Zimbra APT repositories.
+            Record non-patch packages from the selected Zimbra Ubuntu APT repositories.
+  catalog-availability
+            Catalogue Ubuntu 18, 20, 22, and 24 repositories and merge their version map.
   deb-inspect [package] [--after <version>] [--refresh-catalog]
            Compare all regular payload files in a package's latest two versions.
   deb-inspect --interactive
            Select a catalogued non-patch package and two repository versions.
   source-extract <extractor> <before-release> <after-release>
-            Download the mapped package builds and print an upstream-ready diff.
+            Download the selected-series package builds and print an upstream-ready diff.
   source-extract-manual <extractor> --tag <upstream-tag> --inspection-directory <path>
             Inspect an existing package comparison and report artifact hunks.
   status   Show the named container's state.
   stop     Stop and remove the named analysis container; retain host data.
 
 EOF
+}
+
+ubuntu_series=24
+arguments=()
+
+parse_ubuntu_series() {
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --ubuntu-series)
+                [[ $# -ge 2 ]] || { printf '%s\n' 'error: --ubuntu-series requires 18, 20, 22, or 24' >&2; exit 2; }
+                ubuntu_series=$2
+                shift 2
+                ;;
+            --ubuntu-series=*)
+                ubuntu_series=${1#--ubuntu-series=}
+                shift
+                ;;
+            *)
+                arguments+=("$1")
+                shift
+                ;;
+        esac
+    done
+    case "$ubuntu_series" in
+        18|20|22|24) ;;
+        *) printf 'error: unsupported Ubuntu repository series: %s (expected 18, 20, 22, or 24)\n' "$ubuntu_series" >&2; exit 2 ;;
+    esac
 }
 
 build() {
@@ -62,7 +91,23 @@ start() {
             "${IMAGE}" sleep infinity >/dev/null
         printf 'Container started: %s\n' "${CONTAINER}"
     fi
-    docker exec --user root "${CONTAINER}" apt-get update
+    select_ubuntu_series "$ubuntu_series"
+}
+
+select_ubuntu_series() {
+    local series=$1
+    docker exec --user root "${CONTAINER}" bash -ceu '
+        series=$1
+        profile="/project/Dockerfiles/repositories/debian-repos/ubuntu${series}"
+        test -d "$profile"
+        shopt -s nullglob
+        sources=("$profile"/*.list)
+        test "${#sources[@]}" -gt 0
+        rm -f /etc/apt/sources.list.d/zimbra.list /etc/apt/sources.list.d/zimbra-onlyoffice.list
+        rm -f /var/lib/apt/lists/repo.zimbra.com_apt_*
+        cp "${sources[@]}" /etc/apt/sources.list.d/
+        apt-get update
+    ' -- "$series"
 }
 
 shell() {
@@ -93,6 +138,62 @@ inspect_source_manual() {
     fi
 }
 
+series_results_root() {
+    if [[ "$ubuntu_series" == 24 ]]; then
+        printf '%s' /results
+    else
+        printf '/results/ubuntu%s' "$ubuntu_series"
+    fi
+}
+
+prepare_series() {
+    select_ubuntu_series "$ubuntu_series"
+}
+
+catalog() {
+    prepare_series
+    local root
+    root=$(series_results_root)
+    inspect --catalog --catalogue-file "$root/zimbra-non-patch-debian-package-catalogue.json" "${arguments[@]}"
+}
+
+deb_inspect() {
+    prepare_series
+    local root
+    root=$(series_results_root)
+    inspect \
+        --catalogue-file "$root/zimbra-non-patch-debian-package-catalogue.json" \
+        --results-directory "$root/deb-package-inspections" \
+        "${arguments[@]}"
+}
+
+source_extract() {
+    prepare_series
+    local root
+    root=$(series_results_root)
+    inspect_source \
+        --results-directory "$root" \
+        --repository-cache "/work/source-extractor-repositories/ubuntu${ubuntu_series}" \
+        "${arguments[@]}"
+}
+
+catalog_availability() {
+    local series root catalogue_arguments=()
+    [[ ${#arguments[@]} -eq 0 ]] || { printf '%s\n' 'error: catalog-availability does not accept additional arguments' >&2; exit 2; }
+    for series in 18 20 22 24; do
+        ubuntu_series=$series
+        prepare_series
+        root=$(series_results_root)
+        inspect --catalog --catalogue-file "$root/zimbra-non-patch-debian-package-catalogue.json"
+        catalogue_arguments+=(--catalogue "${series}=${root}/zimbra-non-patch-debian-package-catalogue.json")
+    done
+    docker exec "${CONTAINER}" /project/scripts/ubuntu-package-repository-map \
+        "${catalogue_arguments[@]}" \
+        --output /results/ubuntu-repository-version-map.json
+    ubuntu_series=24
+    prepare_series
+}
+
 status() {
     docker container inspect --format '{{.Name}}: running={{.State.Running}} image={{.Config.Image}}' "${CONTAINER}"
 }
@@ -105,14 +206,16 @@ command=${1:-}
 if [[ $# -gt 0 ]]; then
     shift
 fi
+parse_ubuntu_series "$@"
 case "${command}" in
     build) build ;;
     start) start ;;
-    shell) shell ;;
-    catalog) inspect --catalog "$@" ;;
-    deb-inspect) inspect "$@" ;;
-    source-extract) inspect_source "$@" ;;
-    source-extract-manual) inspect_source_manual "$@" ;;
+    shell) prepare_series; shell ;;
+    catalog) catalog ;;
+    catalog-availability) catalog_availability ;;
+    deb-inspect) deb_inspect ;;
+    source-extract) source_extract ;;
+    source-extract-manual) inspect_source_manual "${arguments[@]}" ;;
     status) status ;;
     stop) stop ;;
     *) usage; exit 2 ;;

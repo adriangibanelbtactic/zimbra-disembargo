@@ -1,0 +1,5 @@
+deb [arch=amd64 signed-by=/etc/apt/trusted.gpg.d/zimbra.gpg] https://repo.zimbra.com/apt/87 focal zimbra
+deb [arch=amd64 signed-by=/etc/apt/trusted.gpg.d/zimbra.gpg] https://repo.zimbra.com/apt/1000 focal zimbra
+deb [arch=amd64 signed-by=/etc/apt/trusted.gpg.d/zimbra.gpg] https://repo.zimbra.com/apt/1010 focal zimbra
+deb [arch=amd64 signed-by=/etc/apt/trusted.gpg.d/zimbra.gpg] https://repo.zimbra.com/apt/1000-ne focal zimbra
+deb [arch=amd64 signed-by=/etc/apt/trusted.gpg.d/zimbra.gpg] https://repo.zimbra.com/apt/1010-ne focal zimbra

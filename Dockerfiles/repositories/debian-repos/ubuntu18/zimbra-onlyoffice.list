@@ -1,0 +1,1 @@
+deb [arch=amd64 signed-by=/etc/apt/trusted.gpg.d/zimbra.gpg] https://repo.zimbra.com/apt/onlyoffice-1010 bionic zimbra
