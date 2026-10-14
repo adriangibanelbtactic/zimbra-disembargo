@@ -132,6 +132,16 @@ For a manual TUI workflow that selects one non-patch package, two versions, and
 one changed full-payload file, see [Ubuntu 24.04 Debian non-patch packages
 pseudo-code analysis: TUI walkthrough](docs/analysis-methods/ubuntu24-debian-non-patch-packages-pseudo-code-analysis-tui-walkthrough.md).
 
+The same environment can run deterministic [source extractors][source-extractors]
+that map selected package artifacts to public upstream Git paths and preserve
+unmatched artifact hunks for review.
+
+See [source extractor usage][source-extractor-usage] for automatic previous-tag
+selection and its upstream-ready diff output.
+
+For a complete fresh-checkout verification of the first extractor, see the
+[`zm-ajax` source extractor walkthrough][zm-ajax-source-extractor-walkthrough].
+
 ## What open source means here
 
 The source code in this repository is open source and is licensed under the GNU
@@ -172,6 +182,9 @@ This project is licensed under the [GNU General Public License v3.0](LICENSE).
 [zimbra-github]: https://github.com/Zimbra
 [zimbra-foss-builder]: https://github.com/maldua/zimbra-foss-builder
 [docker-install]: https://docs.docker.com/engine/install/
+[source-extractors]: docs/analysis-methods/ubuntu24-debian-non-patch-packages-pseudo-code-analysis-environment.md#deterministic-source-extractors
+[source-extractor-usage]: docs/analysis-methods/ubuntu24-source-extractor-usage.md
+[zm-ajax-source-extractor-walkthrough]: docs/analysis-methods/ubuntu24-source-extractor-zm-ajax-walkthrough.md
 
 [^zimbra-foss]: See the linked discussion for a maintainer's explanation of
     embargoed and missing commits, and their impact on FOSS builds.
