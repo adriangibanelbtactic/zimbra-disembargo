@@ -95,6 +95,9 @@ binary analysis.
 The initial Ubuntu 24.04 Debian-package acquisition and inspection environment
 is documented in [Ubuntu 24.04 patch packages pseudo-code analysis
 environment](ubuntu24-patch-packages-pseudo-code-analysis-environment.md).
+The separate workflow for every Zimbra-repository Debian package other than
+`*-patch` packages is documented in [Ubuntu 24.04 Debian non-patch packages
+pseudo-code analysis environment](ubuntu24-debian-non-patch-packages-pseudo-code-analysis-environment.md).
 
 ## Cross-method reporting
 

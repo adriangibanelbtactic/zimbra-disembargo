@@ -117,6 +117,14 @@ For a fresh-work-directory, manual TUI workflow that selects and reviews one
 changed source-like patch file, see [Ubuntu 24.04 patch packages pseudo-code
 analysis: TUI walkthrough](docs/analysis-methods/ubuntu24-patch-packages-pseudo-code-analysis-tui-walkthrough.md).
 
+### Ubuntu 24.04 Debian non-patch packages pseudo-code analysis
+
+The separate Ubuntu 24.04 container inventories every regular file in package
+payloads from all configured Zimbra APT repositories, excluding `*-patch`
+packages. It persists a reusable package catalogue and has its own working
+path. See [Ubuntu 24.04 Debian non-patch packages pseudo-code analysis
+environment](docs/analysis-methods/ubuntu24-debian-non-patch-packages-pseudo-code-analysis-environment.md).
+
 ## What open source means here
 
 The source code in this repository is open source and is licensed under the GNU

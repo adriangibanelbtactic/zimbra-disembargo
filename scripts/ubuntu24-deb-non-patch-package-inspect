@@ -1,0 +1,603 @@
+#!/usr/bin/env python3
+"""Acquire and inspect versioned non-patch Ubuntu 24.04 NE Debian packages.
+
+The package catalogue is built once from the binary package indexes of every
+configured repo.zimbra.com APT source. Package names ending in ``-patch`` are
+excluded at catalogue time. Comparisons download the exact selected packages,
+but never install them, and inventory every regular file in each payload.
+"""
+import argparse
+import bz2
+import curses
+import gzip
+import hashlib
+import json
+import lzma
+import re
+import subprocess
+import sys
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from functools import cmp_to_key
+from pathlib import Path
+from typing import Callable, Optional
+
+
+REPOSITORY_URI_PREFIX = "https://repo.zimbra.com/apt/"
+PATCH_PACKAGE_SUFFIX = "-patch"
+CATALOG_SCHEMA_VERSION = 1
+LZ4_FRAME_MAGIC = b"\x04\x22\x4d\x18"
+
+
+class AnalysisError(Exception):
+    """A catalogue, package selection, or local package inspection failed."""
+
+
+@dataclass(frozen=True)
+class DebianPackage:
+    name: str
+    version: str
+    architecture: str
+    sources: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class PackageArtifact:
+    """A regular file in an extracted package payload and its content identity."""
+
+    relative_path: str
+    md5: str
+    size: int
+
+
+def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(command, check=True, text=True, **kwargs)
+
+
+def compare_versions(left: DebianPackage, right: DebianPackage) -> int:
+    try:
+        less_than = subprocess.run(
+            ["dpkg", "--compare-versions", left.version, "lt", right.version], text=True, check=False
+        )
+        if less_than.returncode > 1:
+            raise AnalysisError("dpkg could not compare Debian package versions")
+        if less_than.returncode == 0:
+            return -1
+        greater_than = subprocess.run(
+            ["dpkg", "--compare-versions", left.version, "gt", right.version], text=True, check=False
+        )
+        if greater_than.returncode > 1:
+            raise AnalysisError("dpkg could not compare Debian package versions")
+        if greater_than.returncode == 0:
+            return 1
+        return 0
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise AnalysisError(f"Could not compare Debian package versions: {error}") from error
+
+
+def is_patch_package(package_name: str) -> bool:
+    """Patch packages are deliberately outside this workflow's catalogue."""
+    return package_name.endswith(PATCH_PACKAGE_SUFFIX)
+
+
+def zimbra_package_indexes() -> list[tuple[str, Path]]:
+    """Locate APT's downloaded binary package indexes for Zimbra sources."""
+    try:
+        completed = run(
+            ["apt-get", "indextargets", "--format", "$(URI)\t$(FILENAME)"], capture_output=True
+        )
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise AnalysisError(f"Could not list APT package indexes: {error}") from error
+    indexes: list[tuple[str, Path]] = []
+    for line in completed.stdout.splitlines():
+        try:
+            uri, filename = line.split("\t", 1)
+        except ValueError as error:
+            raise AnalysisError(f"Unexpected apt-get indextargets output: {line!r}") from error
+        if uri.startswith(REPOSITORY_URI_PREFIX) and uri.endswith("/binary-amd64/Packages"):
+            path = Path(filename)
+            if not path.is_file():
+                raise AnalysisError(f"APT package index is missing: {path}")
+            indexes.append((uri, path))
+    if not indexes:
+        raise AnalysisError(f"No binary package indexes from {REPOSITORY_URI_PREFIX} are available; run apt-get update")
+    return indexes
+
+
+def package_index_text(index: Path) -> str:
+    """Read an APT Packages index, including APT's locally compressed forms."""
+    try:
+        contents = index.read_bytes()
+    except OSError as error:
+        raise AnalysisError(f"Could not read APT package index {index}: {error}") from error
+    try:
+        if contents.startswith(LZ4_FRAME_MAGIC):
+            # Ubuntu APT commonly stores its downloaded Packages lists as LZ4.
+            # Python's standard library has no LZ4 decoder, so the image ships
+            # the small lz4 command-line decoder for this one local operation.
+            return run(["lz4", "--decompress", "--stdout", str(index)], capture_output=True).stdout
+        if contents.startswith(b"\x1f\x8b"):
+            contents = gzip.decompress(contents)
+        elif contents.startswith(b"BZh"):
+            contents = bz2.decompress(contents)
+        elif contents.startswith(b"\xfd7zXZ\x00"):
+            contents = lzma.decompress(contents)
+        return contents.decode("utf-8")
+    except (OSError, UnicodeError, ValueError, lzma.LZMAError, subprocess.CalledProcessError) as error:
+        raise AnalysisError(f"Could not decode APT package index {index}: {error}") from error
+
+
+def package_index_records(index: Path) -> list[tuple[str, str, str]]:
+    """Read the Package, Version, and Architecture fields from one Packages file."""
+    stanzas = package_index_text(index).split("\n\n")
+    records: list[tuple[str, str, str]] = []
+    for stanza in stanzas:
+        fields: dict[str, str] = {}
+        for line in stanza.splitlines():
+            if line.startswith((" ", "\t")) or ":" not in line:
+                continue
+            key, value = line.split(":", 1)
+            fields[key] = value.strip()
+        if not fields:
+            continue
+        try:
+            records.append((fields["Package"], fields["Version"], fields["Architecture"]))
+        except KeyError as error:
+            raise AnalysisError(f"Package index {index} has an incomplete stanza") from error
+    return records
+
+
+def catalogue_from_indexes(indexes: list[tuple[str, Path]]) -> tuple[dict[str, list[DebianPackage]], list[dict[str, object]]]:
+    """Build a version catalogue and provenance records from downloaded indexes."""
+    collected: dict[tuple[str, str, str], set[str]] = {}
+    index_metadata: list[dict[str, object]] = []
+    for uri, path in indexes:
+        records = package_index_records(path)
+        index_metadata.append(
+            {"uri": uri, "path": str(path), "sha256": sha256(path), "package_records": len(records)}
+        )
+        for name, version, architecture in records:
+            if is_patch_package(name):
+                continue
+            collected.setdefault((name, version, architecture), set()).add(uri)
+    packages: dict[str, list[DebianPackage]] = {}
+    for (name, version, architecture), sources in collected.items():
+        packages.setdefault(name, []).append(DebianPackage(name, version, architecture, tuple(sorted(sources))))
+    for versions in packages.values():
+        versions.sort(key=cmp_to_key(compare_versions))
+    return dict(sorted(packages.items())), index_metadata
+
+
+def catalogue_document(
+    packages: dict[str, list[DebianPackage]], index_metadata: list[dict[str, object]]
+) -> dict[str, object]:
+    return {
+        "schema_version": CATALOG_SCHEMA_VERSION,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "repository_uri_prefix": REPOSITORY_URI_PREFIX,
+        "excluded_package_rule": f"package name ends with {PATCH_PACKAGE_SUFFIX!r}",
+        "source_indexes": index_metadata,
+        "package_count": len(packages),
+        "packages": [
+            {
+                "name": name,
+                "versions": [
+                    {
+                        "version": package.version,
+                        "architecture": package.architecture,
+                        "sources": list(package.sources),
+                    }
+                    for package in versions
+                ],
+            }
+            for name, versions in packages.items()
+        ],
+    }
+
+
+def write_catalogue(destination: Path) -> dict[str, list[DebianPackage]]:
+    packages, indexes = catalogue_from_indexes(zimbra_package_indexes())
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(json.dumps(catalogue_document(packages, indexes), indent=2) + "\n", encoding="utf-8")
+    return packages
+
+
+def read_catalogue(path: Path) -> dict[str, list[DebianPackage]]:
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise AnalysisError(f"Could not read package catalogue {path}: {error}") from error
+    if document.get("schema_version") != CATALOG_SCHEMA_VERSION:
+        raise AnalysisError(f"Unsupported package catalogue schema in {path}")
+    if document.get("repository_uri_prefix") != REPOSITORY_URI_PREFIX:
+        raise AnalysisError(f"Package catalogue {path} was not made from the configured Zimbra repositories")
+    packages: dict[str, list[DebianPackage]] = {}
+    try:
+        for item in document["packages"]:
+            name = item["name"]
+            if is_patch_package(name):
+                raise AnalysisError(f"Patch package {name!r} is present in non-patch catalogue {path}")
+            packages[name] = [
+                DebianPackage(name, version["version"], version["architecture"], tuple(version["sources"]))
+                for version in item["versions"]
+            ]
+    except (KeyError, TypeError) as error:
+        raise AnalysisError(f"Package catalogue {path} is malformed") from error
+    return packages
+
+
+def load_catalogue(path: Path, refresh: bool) -> dict[str, list[DebianPackage]]:
+    if refresh:
+        return write_catalogue(path)
+    if not path.is_file():
+        raise AnalysisError(f"Package catalogue does not exist: {path}; run the catalog command first")
+    return read_catalogue(path)
+
+
+def draw_selector(
+    screen: "curses._CursesWindow", title: str, values: list[object], label: Callable[[object], str]
+) -> Optional[object]:
+    """Select an item with an incremental case-insensitive filter."""
+    query = ""
+    selected = 0
+    offset = 0
+    while True:
+        filtered = [value for value in values if query.lower() in label(value).lower()]
+        selected = min(selected, len(filtered) - 1) if filtered else 0
+        screen.erase()
+        height, width = screen.getmaxyx()
+        screen.addnstr(0, 0, title, max(0, width - 1), curses.A_BOLD)
+        screen.addnstr(1, 0, "Type to filter; Up/Down select; Enter confirm; q cancel.", max(0, width - 1))
+        screen.addnstr(2, 0, f"Filter: {query}", max(0, width - 1))
+        screen.addnstr(3, 0, f"{len(filtered)} matching item(s)", max(0, width - 1))
+        visible = max(1, height - 5)
+        if selected < offset:
+            offset = selected
+        if selected >= offset + visible:
+            offset = selected - visible + 1
+        for row, value in enumerate(filtered[offset : offset + visible], start=4):
+            attribute = curses.A_REVERSE if offset + row - 4 == selected else curses.A_NORMAL
+            screen.addnstr(row, 0, label(value), max(0, width - 1), attribute)
+        screen.refresh()
+        key = screen.get_wch()
+        if key in ("\n", "\r", curses.KEY_ENTER):
+            return filtered[selected] if filtered else None
+        if key in ("q", "Q", "\x1b"):
+            return None
+        if key in (curses.KEY_UP, "k") and filtered:
+            selected = max(0, selected - 1)
+        elif key in (curses.KEY_DOWN, "j") and filtered:
+            selected = min(len(filtered) - 1, selected + 1)
+        elif key == curses.KEY_PPAGE and filtered:
+            selected = max(0, selected - visible)
+        elif key == curses.KEY_NPAGE and filtered:
+            selected = min(len(filtered) - 1, selected + visible)
+        elif key in (curses.KEY_BACKSPACE, "\b", "\x7f"):
+            query = query[:-1]
+            offset = 0
+        elif isinstance(key, str) and key.isprintable():
+            query += key
+            offset = 0
+
+
+def select_versions(packages: dict[str, list[DebianPackage]]) -> Optional[tuple[DebianPackage, DebianPackage]]:
+    def choose(screen: "curses._CursesWindow") -> Optional[tuple[DebianPackage, DebianPackage]]:
+        candidates = [name for name, versions in packages.items() if len(versions) >= 2]
+        name = draw_selector(screen, "Select non-patch NE Debian package", candidates, str)
+        if name is None:
+            return None
+        versions = packages[str(name)]
+        before = draw_selector(screen, f"Select BEFORE version: {name}", versions, lambda item: item.version)
+        if before is None:
+            return None
+        after = draw_selector(
+            screen,
+            f"Select AFTER version: {name}",
+            [item for item in versions if compare_versions(item, before) > 0],
+            lambda item: item.version,
+        )
+        return None if after is None else (before, after)
+
+    return curses.wrapper(choose)
+
+
+def selected_after(versions: list[DebianPackage], requested: Optional[str]) -> DebianPackage:
+    if requested is None:
+        return versions[-1]
+    matches = [package for package in versions if package.version == requested]
+    if not matches:
+        raise AnalysisError(f"No catalogue version matching {requested!r} is available")
+    return matches[0]
+
+
+def automatic_selection(
+    packages: dict[str, list[DebianPackage]], package_name: str, requested_after: Optional[str]
+) -> tuple[DebianPackage, DebianPackage]:
+    try:
+        versions = packages[package_name]
+    except KeyError as error:
+        raise AnalysisError(f"{package_name} is not a catalogue package from {REPOSITORY_URI_PREFIX}") from error
+    if len(versions) < 2:
+        raise AnalysisError(f"{package_name} has fewer than two catalogued versions")
+    after = selected_after(versions, requested_after)
+    earlier = [candidate for candidate in versions if compare_versions(candidate, after) < 0]
+    if not earlier:
+        raise AnalysisError(f"{after.version} has no earlier version for {package_name}")
+    return earlier[-1], after
+
+
+def safe_name(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", value)
+
+
+def unique_result_directory(root: Path, before: DebianPackage, after: DebianPackage) -> Path:
+    stem = f"{safe_name(before.version)}__to__{safe_name(after.version)}"
+    candidate = root / safe_name(before.name) / stem
+    suffix = 2
+    while candidate.exists():
+        candidate = root / safe_name(before.name) / f"{stem}-{suffix}"
+        suffix += 1
+    candidate.mkdir(parents=True)
+    return candidate
+
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for block in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def md5sum(path: Path) -> str:
+    digest = hashlib.md5()
+    with path.open("rb") as source:
+        for block in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def download_deb(package: DebianPackage, destination: Path) -> Path:
+    destination.mkdir(parents=True)
+    try:
+        run(["apt-get", "download", f"{package.name}={package.version}"], cwd=destination)
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise AnalysisError(f"Could not download {package.name}={package.version}: {error}") from error
+    downloaded = list(destination.glob("*.deb"))
+    if len(downloaded) != 1:
+        raise AnalysisError(f"Expected one Debian package for {package.name}={package.version}, found {len(downloaded)}")
+    deb = downloaded[0]
+    try:
+        fields = run(
+            ["dpkg-deb", "--show", "--showformat=${Package}\\n${Version}\\n${Architecture}\\n", str(deb)],
+            capture_output=True,
+        ).stdout.splitlines()
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise AnalysisError(f"Could not inspect downloaded package {deb}: {error}") from error
+    if fields != [package.name, package.version, package.architecture]:
+        raise AnalysisError(f"Downloaded Debian package does not match selection: {deb}")
+    return deb
+
+
+def inspect_deb(deb: Path, destination: Path) -> dict[str, str]:
+    try:
+        info = run(["dpkg-deb", "--info", str(deb)], capture_output=True).stdout
+        contents = run(["dpkg-deb", "--contents", str(deb)], capture_output=True).stdout
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise AnalysisError(f"Could not inspect {deb}: {error}") from error
+    info_path = destination / "info.txt"
+    contents_path = destination / "contents.txt"
+    info_path.write_text(info, encoding="utf-8")
+    contents_path.write_text(contents, encoding="utf-8")
+    return {"info": str(info_path.name), "contents": str(contents_path.name)}
+
+
+def extract_payload(deb: Path, destination: Path) -> None:
+    """Extract package contents without running maintainer scripts or installing."""
+    destination.mkdir()
+    try:
+        run(["dpkg-deb", "--extract", str(deb), str(destination)])
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise AnalysisError(f"Could not extract package payload {deb}: {error}") from error
+
+
+def inventory_package_artifacts(payload: Path) -> dict[str, PackageArtifact]:
+    """Inventory every regular file in a package payload without following symlinks."""
+    artifacts: dict[str, PackageArtifact] = {}
+    for candidate in sorted(payload.rglob("*")):
+        if candidate.is_symlink() or not candidate.is_file():
+            continue
+        relative_path = candidate.relative_to(payload).as_posix()
+        artifacts[relative_path] = PackageArtifact(relative_path, md5sum(candidate), candidate.stat().st_size)
+    return artifacts
+
+
+def write_package_inventory(artifacts: dict[str, PackageArtifact], destination: Path) -> Path:
+    inventory_path = destination / "package-artifacts.json"
+    inventory = {
+        "schema_version": 1,
+        "installed_root": "/",
+        "regular_file_count": len(artifacts),
+        "artifacts": [
+            {"path": artifact.relative_path, "md5": artifact.md5, "size": artifact.size}
+            for artifact in sorted(artifacts.values(), key=lambda item: item.relative_path)
+        ],
+    }
+    inventory_path.write_text(json.dumps(inventory, indent=2) + "\n", encoding="utf-8")
+    return inventory_path
+
+
+def changed_package_artifacts(
+    before: dict[str, PackageArtifact], after: dict[str, PackageArtifact]
+) -> list[tuple[PackageArtifact, PackageArtifact]]:
+    return [
+        (before[path], after[path])
+        for path in sorted(before.keys() & after.keys())
+        if before[path].md5 != after[path].md5
+    ]
+
+
+def artifact_label(pair: tuple[PackageArtifact, PackageArtifact]) -> str:
+    before, after = pair
+    return f"{after.relative_path}  {before.md5} -> {after.md5}"
+
+
+def select_package_artifact(
+    changed: list[tuple[PackageArtifact, PackageArtifact]]
+) -> Optional[tuple[PackageArtifact, PackageArtifact]]:
+    def choose(screen: "curses._CursesWindow") -> Optional[tuple[PackageArtifact, PackageArtifact]]:
+        return draw_selector(screen, "Select changed package artifact", changed, artifact_label)
+
+    return curses.wrapper(choose)
+
+
+def write_artifact_diff(
+    result: Path,
+    before_payload: Path,
+    after_payload: Path,
+    artifacts: tuple[PackageArtifact, PackageArtifact],
+) -> Path:
+    """Write an applyable Git binary diff for one selected changed artifact."""
+    before, after = artifacts
+    if before.relative_path != after.relative_path or before.md5 == after.md5:
+        raise AnalysisError("The selected package artifacts are not a changed path pair")
+    before_path = before_payload / before.relative_path
+    after_path = after_payload / after.relative_path
+    diff_path = result / "artifact-diffs" / f"{after.relative_path}.diff"
+    diff_path.parent.mkdir(parents=True, exist_ok=True)
+    completed = subprocess.run(
+        [
+            "git", "diff", "--no-index", "--no-ext-diff", "--no-renames", "--binary",
+            "--src-prefix=before/", "--dst-prefix=after/", "--", str(before_path), str(after_path),
+        ],
+        capture_output=True,
+    )
+    if completed.returncode != 1:
+        detail = completed.stderr.decode("utf-8", errors="replace").strip()
+        raise AnalysisError(f"Could not create binary diff for {after.relative_path}: {detail}")
+    diff_path.write_bytes(completed.stdout)
+    manifest_path = result / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["selected_artifact"] = {
+        "path": after.relative_path,
+        "before": {"md5": before.md5, "size": before.size},
+        "after": {"md5": after.md5, "size": after.size},
+        "binary_diff": str(diff_path.relative_to(result)),
+    }
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    return diff_path
+
+
+def package_details(package: DebianPackage) -> dict[str, object]:
+    return {
+        "name": package.name,
+        "version": package.version,
+        "architecture": package.architecture,
+        "apt_sources": list(package.sources),
+    }
+
+
+def compare(
+    before: DebianPackage, after: DebianPackage, results_root: Path, catalogue_path: Path
+) -> tuple[Path, list[tuple[PackageArtifact, PackageArtifact]]]:
+    result = unique_result_directory(results_root, before, after)
+    before_directory, after_directory = result / "before", result / "after"
+    before_deb = download_deb(before, before_directory)
+    after_deb = download_deb(after, after_directory)
+    before_inspection = inspect_deb(before_deb, before_directory)
+    after_inspection = inspect_deb(after_deb, after_directory)
+    before_payload, after_payload = before_directory / "payload", after_directory / "payload"
+    extract_payload(before_deb, before_payload)
+    extract_payload(after_deb, after_payload)
+    before_artifacts = inventory_package_artifacts(before_payload)
+    after_artifacts = inventory_package_artifacts(after_payload)
+    before_inventory = write_package_inventory(before_artifacts, before_directory)
+    after_inventory = write_package_inventory(after_artifacts, after_directory)
+    changed = changed_package_artifacts(before_artifacts, after_artifacts)
+    manifest = {
+        "schema_version": 1,
+        "method": "ubuntu24-debian-non-patch-packages-pseudo-code-analysis",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "catalogue": str(catalogue_path),
+        "repository_uri_prefix": REPOSITORY_URI_PREFIX,
+        "before": {**package_details(before), "deb": str(before_deb.relative_to(result)), "sha256": sha256(before_deb), "inspection": before_inspection},
+        "after": {**package_details(after), "deb": str(after_deb.relative_to(result)), "sha256": sha256(after_deb), "inspection": after_inspection},
+        "package_artifacts": {
+            "installed_root": "/",
+            "before_inventory": str(before_inventory.relative_to(result)),
+            "after_inventory": str(after_inventory.relative_to(result)),
+            "before_regular_files": len(before_artifacts),
+            "after_regular_files": len(after_artifacts),
+            "common_regular_files": len(before_artifacts.keys() & after_artifacts.keys()),
+            "changed_regular_files": len(changed),
+            "before_only_regular_files": len(before_artifacts.keys() - after_artifacts.keys()),
+            "after_only_regular_files": len(after_artifacts.keys() - before_artifacts.keys()),
+        },
+        "boundary": "Packages were not installed. Payloads were extracted only to inventory every regular package file by MD5; no artifact is classified as pseudo-source or semantically analysed.",
+    }
+    (result / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    return result, changed
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("package", nargs="?", help="catalogued non-patch package; omit to inspect every comparable package")
+    parser.add_argument("--after", metavar="VERSION", help="inspect this version with its immediate predecessor")
+    parser.add_argument("--interactive", action="store_true", help="select package and versions in a terminal UI")
+    parser.add_argument("--catalog", action="store_true", help="write the package catalogue and exit")
+    parser.add_argument("--refresh-catalog", action="store_true", help="rebuild the package catalogue before inspection")
+    parser.add_argument("--catalogue-file", type=Path, default=Path("/results/zimbra-non-patch-debian-package-catalogue.json"), help="persistent package catalogue path")
+    parser.add_argument("--results-directory", type=Path, default=Path("/results/deb-package-inspections"), help="directory for durable inspection results")
+    arguments = parser.parse_args()
+    if arguments.after and not arguments.package:
+        parser.error("--after requires a package name")
+    if arguments.interactive and (arguments.package or arguments.after):
+        parser.error("--interactive cannot be combined with a package name or --after")
+    if arguments.catalog and (arguments.package or arguments.after or arguments.interactive or arguments.refresh_catalog):
+        parser.error("--catalog cannot be combined with package selection or --refresh-catalog")
+    try:
+        if arguments.catalog:
+            packages = write_catalogue(arguments.catalogue_file)
+            print(f"Catalogue written to {arguments.catalogue_file} ({len(packages)} non-patch package(s)).")
+            return 0
+        packages = load_catalogue(arguments.catalogue_file, arguments.refresh_catalog)
+        if arguments.interactive:
+            selected = select_versions(packages)
+            selections = [] if selected is None else [selected]
+        elif arguments.package:
+            selections = [automatic_selection(packages, arguments.package, arguments.after)]
+        else:
+            selections = [
+                automatic_selection(packages, name, None)
+                for name, versions in packages.items()
+                if len(versions) >= 2
+            ]
+            if not selections:
+                raise AnalysisError("No non-patch package in the catalogue has two versions")
+        if not selections:
+            print("No Debian package inspection selected.")
+            return 0
+        for before, after in selections:
+            result, changed = compare(before, after, arguments.results_directory, arguments.catalogue_file)
+            print(f"Inspection written to {result}")
+            print(f"Found {len(changed)} changed common regular file(s) in the full package payload.")
+            if arguments.interactive and changed:
+                selected_artifact = select_package_artifact(changed)
+                if selected_artifact is None:
+                    print("No package artifact diff selected.")
+                else:
+                    diff_path = write_artifact_diff(
+                        result, result / "before" / "payload", result / "after" / "payload", selected_artifact
+                    )
+                    print(f"Artifact diff written to {diff_path}")
+            elif arguments.interactive:
+                print("No changed common regular package artifact is available for selection.")
+            print(f"Review {result / 'manifest.json'} and the before/after package metadata.")
+    except AnalysisError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
