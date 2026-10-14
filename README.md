@@ -142,6 +142,12 @@ selection and its upstream-ready diff output.
 For a complete fresh-checkout verification of the first extractor, see the
 [`zm-ajax` source extractor walkthrough][zm-ajax-source-extractor-walkthrough].
 
+For a repeatable investigation of a release's announced security fixes, see the
+[security source-extractor release-review playbook][security-source-extractor-release-review-skill].
+It is an agent-oriented checklist and tool guide that correlates package
+comparison output, the release announcement, and the public upstream tag diffs
+before a deterministic source extractor is added.
+
 ## What open source means here
 
 The source code in this repository is open source and is licensed under the GNU
@@ -185,6 +191,7 @@ This project is licensed under the [GNU General Public License v3.0](LICENSE).
 [source-extractors]: docs/analysis-methods/ubuntu24-debian-non-patch-packages-pseudo-code-analysis-environment.md#deterministic-source-extractors
 [source-extractor-usage]: docs/analysis-methods/ubuntu24-source-extractor-usage.md
 [zm-ajax-source-extractor-walkthrough]: docs/analysis-methods/ubuntu24-source-extractor-zm-ajax-walkthrough.md
+[security-source-extractor-release-review-skill]: tools/release-security-extractor-review/SKILL.md
 
 [^zimbra-foss]: See the linked discussion for a maintainer's explanation of
     embargoed and missing commits, and their impact on FOSS builds.

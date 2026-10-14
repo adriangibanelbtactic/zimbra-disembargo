@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+# Print the Zimbra GitHub repository URLs selected by a tagged zm-build release.
+set -euo pipefail
+
+readonly TOOL_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+readonly REPOSITORY_DIR="$(cd -- "${TOOL_DIR}/../.." && pwd)"
+readonly TAG_HELPER_URL='https://github.com/maldua/zimbra-tag-helper.git'
+readonly ZM_BUILD_URL='https://github.com/Zimbra/zm-build.git'
+
+usage() {
+    cat <<'EOF'
+Usage: print-zimbra-build-repositories [--cache-directory DIRECTORY] <zm-build-tag>
+
+Run the upstream zm-build-print-repos.pl helper against the requested zm-build
+tag and print its Zimbra GitHub repository URLs, one per line.
+
+The helper is fetched into an ignored cache; neither it nor any Zimbra source is
+added to this repository.
+EOF
+}
+
+cache_directory="${REPOSITORY_DIR}/cache/release-security-extractor-review"
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --cache-directory)
+            cache_directory="$2"
+            shift 2
+            ;;
+        --help|-h)
+            usage
+            exit 0
+            ;;
+        --*)
+            usage >&2
+            exit 2
+            ;;
+        *)
+            break
+            ;;
+    esac
+done
+
+if [[ $# -ne 1 ]]; then
+    usage >&2
+    exit 2
+fi
+release_tag="$1"
+
+mkdir -p -- "$cache_directory"
+helper_repository="${cache_directory}/zimbra-tag-helper"
+build_repository="${cache_directory}/zm-build.git"
+
+if [[ -d "${helper_repository}/.git" ]]; then
+    git -C "$helper_repository" fetch --quiet --force origin
+elif [[ -e "$helper_repository" ]]; then
+    printf 'error: helper cache is not a Git checkout: %s\n' "$helper_repository" >&2
+    exit 1
+else
+    git clone --quiet --depth 1 "$TAG_HELPER_URL" "$helper_repository"
+fi
+
+if [[ -d "$build_repository" ]] && git -C "$build_repository" rev-parse --is-bare-repository >/dev/null 2>&1; then
+    git -C "$build_repository" fetch --quiet --force --tags origin
+elif [[ -e "$build_repository" ]]; then
+    printf 'error: zm-build cache is not a bare Git repository: %s\n' "$build_repository" >&2
+    exit 1
+else
+    git clone --quiet --bare "$ZM_BUILD_URL" "$build_repository"
+fi
+
+if ! git -C "$build_repository" rev-parse --verify --quiet "${release_tag}^{commit}" >/dev/null; then
+    printf 'error: zm-build tag does not exist: %s\n' "$release_tag" >&2
+    exit 1
+fi
+
+run_directory="$(mktemp -d "${cache_directory}/.tag-helper-run.XXXXXX")"
+cleanup() {
+    rm -rf -- "$run_directory"
+}
+trap cleanup EXIT
+
+mkdir -- "${run_directory}/zm-build"
+git -C "$build_repository" archive "$release_tag" | tar --extract --directory "${run_directory}/zm-build"
+cp -a -- "$helper_repository" "${run_directory}/zimbra-tag-helper"
+
+# The helper expects its sibling zm-build checkout beneath its own directory.
+ln -s ../zm-build "${run_directory}/zimbra-tag-helper/zm-build"
+perl "${run_directory}/zimbra-tag-helper/zm-build-print-repos.pl"

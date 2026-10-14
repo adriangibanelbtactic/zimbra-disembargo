@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+# Survey the public Zimbra repositories and source deltas for two release tags.
+set -euo pipefail
+
+readonly TOOL_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+readonly REPOSITORY_DIR="$(cd -- "${TOOL_DIR}/../.." && pwd)"
+readonly PRINT_REPOSITORIES="${TOOL_DIR}/print-zimbra-build-repositories"
+
+usage() {
+    cat <<'EOF'
+Usage: survey-zimbra-upstream-tags [--cache-directory DIRECTORY] [--output-directory DIRECTORY] <before-tag> <after-tag>
+
+Use zm-build-print-repos.pl for each zm-build tag, then record whether every
+selected Zimbra repository exposes each corresponding upstream release tag.
+For repositories with both tags, also record commit messages and changed paths.
+
+The report directory receives repositories-before.txt, repositories-after.txt,
+repositories-union.txt, tag-status.tsv, and changes/<repository>/{log,names}.
+EOF
+}
+
+cache_directory="${REPOSITORY_DIR}/cache/release-security-extractor-review"
+output_directory=''
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --cache-directory)
+            cache_directory="$2"
+            shift 2
+            ;;
+        --output-directory)
+            output_directory="$2"
+            shift 2
+            ;;
+        --help|-h)
+            usage
+            exit 0
+            ;;
+        --*)
+            usage >&2
+            exit 2
+            ;;
+        *)
+            break
+            ;;
+    esac
+done
+
+if [[ $# -ne 2 ]]; then
+    usage >&2
+    exit 2
+fi
+before_tag="$1"
+after_tag="$2"
+if [[ -z "$output_directory" ]]; then
+    output_directory="${cache_directory}/surveys/${before_tag}__to__${after_tag}"
+fi
+if [[ -e "$output_directory" ]]; then
+    printf 'error: report directory already exists: %s\n' "$output_directory" >&2
+    exit 1
+fi
+
+mkdir -p -- "$output_directory/changes"
+"$PRINT_REPOSITORIES" --cache-directory "$cache_directory" "$before_tag" | sort -u > "${output_directory}/repositories-before.txt"
+"$PRINT_REPOSITORIES" --cache-directory "$cache_directory" "$after_tag" | sort -u > "${output_directory}/repositories-after.txt"
+cat "${output_directory}/repositories-before.txt" "${output_directory}/repositories-after.txt" | sort -u > "${output_directory}/repositories-union.txt"
+
+printf 'repository\turl\tlisted_at_before\tlisted_at_after\thas_before_tag\thas_after_tag\n' > "${output_directory}/tag-status.tsv"
+while IFS= read -r url; do
+    repository="${url##*/}"
+    repository="${repository%.git}"
+    listed_before='no'
+    listed_after='no'
+    grep --fixed-strings --line-regexp --quiet "$url" "${output_directory}/repositories-before.txt" && listed_before='yes'
+    grep --fixed-strings --line-regexp --quiet "$url" "${output_directory}/repositories-after.txt" && listed_after='yes'
+    refs="$(git ls-remote --tags "$url" "refs/tags/${before_tag}" "refs/tags/${after_tag}" 2>/dev/null || true)"
+    has_before="$(awk -v tag="refs/tags/${before_tag}" '$2 == tag || $2 == tag "^{}" { found=1 } END { print found ? "yes" : "no" }' <<<"$refs")"
+    has_after="$(awk -v tag="refs/tags/${after_tag}" '$2 == tag || $2 == tag "^{}" { found=1 } END { print found ? "yes" : "no" }' <<<"$refs")"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$repository" "$url" "$listed_before" "$listed_after" "$has_before" "$has_after" >> "${output_directory}/tag-status.tsv"
+done < "${output_directory}/repositories-union.txt"
+
+upstream_cache="${cache_directory}/upstream-repositories"
+mkdir -p -- "$upstream_cache"
+tail --lines=+2 "${output_directory}/tag-status.tsv" | while IFS=$'\t' read -r repository url listed_before listed_after has_before has_after; do
+    if [[ "$has_before" != yes || "$has_after" != yes ]]; then
+        continue
+    fi
+    repository_cache="${upstream_cache}/${repository}"
+    if [[ -d "${repository_cache}/.git" ]]; then
+        git -C "$repository_cache" remote set-url origin "$url"
+        git -C "$repository_cache" fetch --quiet --force --tags origin
+    elif [[ -e "$repository_cache" ]]; then
+        printf 'error: upstream cache is not a Git checkout: %s\n' "$repository_cache" >&2
+        exit 1
+    else
+        git clone --quiet --filter=blob:none --no-checkout "$url" "$repository_cache"
+    fi
+    repository_output="${output_directory}/changes/${repository}"
+    mkdir -- "$repository_output"
+    git -C "$repository_cache" log --format='%H%x09%s' "${before_tag}..${after_tag}" > "${repository_output}/log.tsv"
+    git -C "$repository_cache" diff --name-status --no-renames "$before_tag" "$after_tag" > "${repository_output}/names.tsv"
+done
+
+printf '%s\n' "$output_directory"

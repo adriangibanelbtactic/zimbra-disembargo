@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "name": "zm-web-client",
+  "upstream": {
+    "github_repository": "Zimbra/zm-web-client",
+    "url": "https://github.com/Zimbra/zm-web-client.git"
+  },
+  "filter-positive": [
+    ".jsp",
+    ".tag"
+  ],
+  "filter-negative": [
+    ".jar",
+    ".class",
+    ".java",
+    ".zgz"
+  ],
+  "mappings": [
+    {
+      "package": "zimbra-mbox-webclient-war",
+      "artifact": "opt/zimbra/jetty_base/webapps/zimbra/WEB-INF/tags/rest/restHead.tag",
+      "source-roots": [
+        "WebRoot/WEB-INF/tags/rest"
+      ],
+      "source-suffixes": [
+        ".tag"
+      ]
+    },
+    {
+      "package": "zimbra-mbox-webclient-war",
+      "artifact": "opt/zimbra/jetty_base/webapps/zimbra/public/launchNewWindow.jsp",
+      "source-roots": [
+        "WebRoot/public"
+      ],
+      "source-suffixes": [
+        ".jsp"
+      ]
+    },
+    {
+      "package": "zimbra-mbox-webclient-war",
+      "artifact": "opt/zimbra/jetty_base/webapps/zimbra/public/launchZCS.jsp",
+      "source-roots": [
+        "WebRoot/public"
+      ],
+      "source-suffixes": [
+        ".jsp"
+      ]
+    }
+  ]
+}
