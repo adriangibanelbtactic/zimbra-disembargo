@@ -23,6 +23,10 @@ Commands:
            Compare all regular payload files in a package's latest two versions.
   deb-inspect --interactive
            Select a catalogued non-patch package and two repository versions.
+  source-extract <extractor> <before-release> <after-release>
+            Download the mapped package builds and print an upstream-ready diff.
+  source-extract-manual <extractor> --tag <upstream-tag> --inspection-directory <path>
+            Inspect an existing package comparison and report artifact hunks.
   status   Show the named container's state.
   stop     Stop and remove the named analysis container; retain host data.
 
@@ -73,6 +77,22 @@ inspect() {
     fi
 }
 
+inspect_source() {
+    if [[ -t 0 && -t 1 ]]; then
+        docker exec --interactive --tty "${CONTAINER}" /project/scripts/ubuntu24-source-extract "$@"
+    else
+        docker exec "${CONTAINER}" /project/scripts/ubuntu24-source-extract "$@"
+    fi
+}
+
+inspect_source_manual() {
+    if [[ -t 0 && -t 1 ]]; then
+        docker exec --interactive --tty "${CONTAINER}" /project/scripts/ubuntu24-source-extract-manual "$@"
+    else
+        docker exec "${CONTAINER}" /project/scripts/ubuntu24-source-extract-manual "$@"
+    fi
+}
+
 status() {
     docker container inspect --format '{{.Name}}: running={{.State.Running}} image={{.Config.Image}}' "${CONTAINER}"
 }
@@ -91,6 +111,8 @@ case "${command}" in
     shell) shell ;;
     catalog) inspect --catalog "$@" ;;
     deb-inspect) inspect "$@" ;;
+    source-extract) inspect_source "$@" ;;
+    source-extract-manual) inspect_source_manual "$@" ;;
     status) status ;;
     stop) stop ;;
     *) usage; exit 2 ;;

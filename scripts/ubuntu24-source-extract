@@ -1,0 +1,109 @@
+#!/usr/bin/env python3
+"""Extract an upstream-ready source diff for two Zimbra release versions."""
+import argparse
+import importlib.machinery
+import importlib.util
+import sys
+from pathlib import Path
+from types import ModuleType
+
+
+def load_script(name: str, path: Path) -> ModuleType:
+    loader = importlib.machinery.SourceFileLoader(name, str(path))
+    specification = importlib.util.spec_from_loader(name, loader)
+    if specification is None:
+        raise RuntimeError(f"Could not load {path}")
+    module = importlib.util.module_from_spec(specification)
+    sys.modules[name] = module
+    loader.exec_module(module)
+    return module
+
+
+ROOT = Path(__file__).resolve().parent
+MANUAL = load_script("ubuntu24_source_extract_manual", ROOT / "ubuntu24-source-extract-manual")
+INSPECTOR = load_script("ubuntu24_deb_non_patch_package_inspect", ROOT / "ubuntu24-deb-non-patch-package-inspect")
+
+
+def package_for_release(packages: dict, package_name: str, release: str):
+    """Choose the newest catalogued Debian build for an X.Y.Z release label."""
+    candidates = [package for package in packages.get(package_name, []) if package.version.startswith(f"{release}.")]
+    if not candidates:
+        raise MANUAL.ExtractionError(
+            f"No catalogued {package_name} build begins with release {release}; run start to refresh APT metadata"
+        )
+    return candidates[-1]
+
+
+def selected_releases(definition: dict, before_or_after: str, after_release: str | None, cache: Path) -> tuple[str, str]:
+    """Use explicit releases, or find the previous existing upstream tag."""
+    if after_release is not None:
+        return before_or_after, after_release
+    upstream = definition["upstream"]
+    repository = MANUAL.ensure_repository(upstream["url"], cache / upstream["github_repository"].replace("/", "__"))
+    before_release, _ = MANUAL.baseline_tag_for_release(repository, before_or_after)
+    return before_release, before_or_after
+
+
+def extract(
+    extractor: str,
+    before_or_after: str,
+    after_release: str | None,
+    definitions: Path,
+    results: Path,
+    cache: Path,
+) -> Path:
+    definition_path = definitions / f"{extractor}.json"
+    definition = MANUAL.load_definition(definition_path)
+    before_release, after_release = selected_releases(definition, before_or_after, after_release, cache)
+    package_names = {mapping["package"] for mapping in definition["mappings"]}
+    if len(package_names) != 1:
+        raise MANUAL.ExtractionError(
+            f"Extractor {extractor} maps multiple packages; automatic extraction currently requires exactly one"
+        )
+    package_name = next(iter(package_names))
+    catalogue = results / "zimbra-non-patch-debian-package-catalogue.json"
+    packages = INSPECTOR.write_catalogue(catalogue)
+    before_package = package_for_release(packages, package_name, before_release)
+    after_package = package_for_release(packages, package_name, after_release)
+    if INSPECTOR.compare_versions(before_package, after_package) >= 0:
+        raise MANUAL.ExtractionError("Before package version must be lower than after package version")
+    inspection, _ = INSPECTOR.compare(before_package, after_package, results / "deb-package-inspections", catalogue)
+    return MANUAL.extract(
+        definition_path,
+        after_release,
+        inspection,
+        results / "source-extractions",
+        cache,
+        before_tag=before_release,
+    )
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description=__doc__, usage="%(prog)s [options] <extractor> [<before-release>] <after-release>"
+    )
+    parser.add_argument("extractor", help="source extractor definition name, without .json")
+    parser.add_argument("before_or_after", help="after release, or before release when AFTER is also supplied")
+    parser.add_argument("after", nargs="?", help="optional after release, for example 10.1.20")
+    parser.add_argument("--definitions-directory", type=Path, default=Path("/project/source-extractors"))
+    parser.add_argument("--results-directory", type=Path, default=Path("/results"))
+    parser.add_argument("--repository-cache", type=Path, default=Path("/work/source-extractor-repositories"))
+    arguments = parser.parse_args()
+    try:
+        result = extract(
+            arguments.extractor,
+            arguments.before_or_after,
+            arguments.after,
+            arguments.definitions_directory,
+            arguments.results_directory,
+            arguments.repository_cache,
+        )
+    except (MANUAL.ExtractionError, INSPECTOR.AnalysisError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 1
+    print(result / "upstream.diff")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

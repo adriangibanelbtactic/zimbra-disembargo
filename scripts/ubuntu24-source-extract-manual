@@ -1,0 +1,488 @@
+#!/usr/bin/env python3
+"""Manually produce deterministic upstream source diffs from a package inspection.
+
+An extractor definition maps installed package artifacts to candidate source
+roots in one upstream Git repository. Each package hunk's before-side text is
+located in the public baseline source tree; a unique match is reconstructed with
+the package hunk's after-side text. No unavailable upstream target tag is read.
+"""
+import argparse
+import difflib
+import hashlib
+import json
+import re
+import subprocess
+import sys
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path, PurePosixPath
+from typing import Any, Optional
+
+
+DEFAULT_FILTER_NEGATIVE = [".jar", ".class", ".java", ".zgz"]
+DEFINITION_SCHEMA_VERSION = 1
+RESULT_SCHEMA_VERSION = 1
+
+
+class ExtractionError(Exception):
+    """An extractor definition, inspection, or Git operation is invalid."""
+
+
+@dataclass(frozen=True)
+class Artifact:
+    path: str
+    md5: str
+
+
+@dataclass(frozen=True)
+class Hunk:
+    header: str
+    before_lines: tuple[str, ...]
+    after_lines: tuple[str, ...]
+    patch: str
+
+
+def command(arguments: list[str], *, cwd: Optional[Path] = None, permitted: tuple[int, ...] = (0,)) -> subprocess.CompletedProcess[bytes]:
+    try:
+        completed = subprocess.run(arguments, cwd=cwd, capture_output=True, check=False)
+    except OSError as error:
+        raise ExtractionError(f"Could not run {' '.join(arguments)!r}: {error}") from error
+    if completed.returncode not in permitted:
+        detail = completed.stderr.decode("utf-8", errors="replace").strip()
+        raise ExtractionError(f"Command failed ({completed.returncode}): {' '.join(arguments)}: {detail}")
+    return completed
+
+
+def read_json(path: Path) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ExtractionError(f"Could not read JSON document {path}: {error}") from error
+    if not isinstance(value, dict):
+        raise ExtractionError(f"JSON document {path} must contain an object")
+    return value
+
+
+def relative_path(value: object, label: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise ExtractionError(f"{label} must be a non-empty relative path")
+    path = PurePosixPath(value)
+    if path.is_absolute() or ".." in path.parts or value != path.as_posix():
+        raise ExtractionError(f"{label} must be a normalized relative path: {value!r}")
+    return value
+
+
+def string_list(value: object, label: str) -> list[str]:
+    if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
+        raise ExtractionError(f"{label} must be a list of non-empty strings")
+    return value
+
+
+def load_definition(path: Path) -> dict[str, Any]:
+    definition = read_json(path)
+    if definition.get("schema_version") != DEFINITION_SCHEMA_VERSION:
+        raise ExtractionError(f"Unsupported source extractor schema in {path}")
+    if not isinstance(definition.get("name"), str) or not definition["name"]:
+        raise ExtractionError(f"Source extractor {path} has no name")
+    upstream = definition.get("upstream")
+    if not isinstance(upstream, dict) or not isinstance(upstream.get("github_repository"), str) or not isinstance(upstream.get("url"), str):
+        raise ExtractionError(f"Source extractor {path} has an invalid upstream")
+    positive = string_list(definition.get("filter-positive", []), "filter-positive")
+    negative = string_list(definition.get("filter-negative", DEFAULT_FILTER_NEGATIVE), "filter-negative")
+    mappings = definition.get("mappings")
+    if not isinstance(mappings, list) or not mappings:
+        raise ExtractionError(f"Source extractor {path} must define at least one mapping")
+    for index, mapping in enumerate(mappings):
+        if not isinstance(mapping, dict):
+            raise ExtractionError(f"mapping {index} must be an object")
+        if not isinstance(mapping.get("package"), str) or not mapping["package"]:
+            raise ExtractionError(f"mapping {index} has no package")
+        mapping["artifact"] = relative_path(mapping.get("artifact"), f"mapping {index} artifact")
+        mapping["source-roots"] = [
+            relative_path(source, f"mapping {index} source root")
+            for source in string_list(mapping.get("source-roots"), f"mapping {index} source-roots")
+        ]
+        mapping["source-suffixes"] = string_list(mapping.get("source-suffixes", [".js"]), f"mapping {index} source-suffixes")
+    definition["filter-positive"] = positive
+    definition["filter-negative"] = negative
+    return definition
+
+
+def tag_key(tag: str) -> Optional[tuple[int, int, int, int, str]]:
+    """Return a sortable key for public Zimbra release-style tags.
+
+    A final prerelease suffix sorts before the plain X.Y.Z release.  Tags that
+    are not release-style are deliberately ignored when finding a predecessor.
+    """
+    match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)(?:[-.]([0-9A-Za-z.+-]+))?", tag)
+    if not match:
+        return None
+    major, minor, patch, suffix = match.groups()
+    return (int(major), int(minor), int(patch), 1 if suffix is None else 0, suffix or "")
+
+
+def git_output(repository: Path, *arguments: str) -> str:
+    completed = command(["git", "-C", str(repository), *arguments])
+    return completed.stdout.decode("utf-8", errors="strict").strip()
+
+
+def ensure_repository(url: str, destination: Path) -> Path:
+    """Create or refresh a cache without checking out an arbitrary revision."""
+    if destination.exists():
+        if not (destination / ".git").is_dir():
+            raise ExtractionError(f"Repository cache exists but is not a Git checkout: {destination}")
+        command(["git", "-C", str(destination), "remote", "set-url", "origin", url])
+        command(["git", "-C", str(destination), "fetch", "--force", "--tags", "origin"])
+    else:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        command(["git", "clone", "--filter=blob:none", "--no-checkout", url, str(destination)])
+    return destination
+
+
+def baseline_tag_for_release(repository: Path, target_release: str) -> tuple[str, str]:
+    """Find the newest public upstream tag lower than a target package release."""
+    if tag_key(target_release) is None:
+        raise ExtractionError(f"Target release is not a supported release tag: {target_release!r}")
+    tags = git_output(repository, "tag", "--list").splitlines()
+    target_key = tag_key(target_release)
+    assert target_key is not None
+    candidates = [(tag_key(tag), tag) for tag in tags]
+    earlier = [(key, tag) for key, tag in candidates if key is not None and key < target_key]
+    if not earlier:
+        raise ExtractionError(f"No public upstream tag exists below target release {target_release} in {repository}")
+    before_tag = max(earlier)[1]
+    before_commit = git_output(repository, "rev-parse", f"{before_tag}^{{commit}}")
+    return before_tag, before_commit
+
+
+def git_diff(
+    repository: Path, before: str, after: str, source: Optional[str] = None, *, unified: int, no_index: bool = False
+) -> bytes:
+    if no_index:
+        arguments = ["git", "diff", "--no-index", "--no-ext-diff", f"--unified={unified}", "--", before, after]
+    else:
+        if source is None:
+            raise ExtractionError("An upstream Git diff requires a source path")
+        arguments = [
+            "git", "-C", str(repository), "diff", "--no-ext-diff", "--no-renames", "--binary",
+            f"--unified={unified}", before, after, "--", source,
+        ]
+    return command(arguments, permitted=(0, 1)).stdout
+
+
+def parse_hunks(patch: bytes) -> list[Hunk]:
+    """Read textual unified-diff hunks without treating a binary patch as text."""
+    if b"\0" in patch or b"Binary files " in patch:
+        return []
+    lines = patch.decode("utf-8", errors="replace").splitlines(keepends=True)
+    hunks: list[Hunk] = []
+    header: Optional[str] = None
+    body: list[str] = []
+    for line in lines:
+        if line.startswith("@@ "):
+            if header is not None:
+                hunks.append(make_hunk(header, body))
+            header, body = line, []
+        elif header is not None:
+            body.append(line)
+    if header is not None:
+        hunks.append(make_hunk(header, body))
+    return hunks
+
+
+def make_hunk(header: str, body: list[str]) -> Hunk:
+    before_lines: list[str] = []
+    after_lines: list[str] = []
+    for line in body:
+        if line.startswith("-"):
+            before_lines.append(line[1:])
+        elif line.startswith("+"):
+            after_lines.append(line[1:])
+        elif line.startswith(" "):
+            before_lines.append(line[1:])
+            after_lines.append(line[1:])
+    return Hunk(header.rstrip("\n"), tuple(before_lines), tuple(after_lines), "".join([header, *body]))
+
+
+def source_paths_at_tag(repository: Path, tag: str, roots: list[str], suffixes: list[str]) -> list[str]:
+    paths = git_output(repository, "ls-tree", "-r", "--name-only", tag, "--", *roots).splitlines()
+    return sorted(path for path in paths if any(path.endswith(suffix) for suffix in suffixes))
+
+
+def source_lines_at_tag(repository: Path, tag: str, path: str) -> tuple[str, ...]:
+    contents = command(["git", "-C", str(repository), "show", f"{tag}:{path}"]).stdout
+    if b"\0" in contents:
+        raise ExtractionError(f"Candidate source file is binary: {path}")
+    try:
+        return tuple(contents.decode("utf-8").splitlines(keepends=True))
+    except UnicodeDecodeError as error:
+        raise ExtractionError(f"Candidate source file is not UTF-8 text: {path}") from error
+
+
+def hunk_occurrences(hunk: Hunk, source_lines: tuple[str, ...]) -> list[int]:
+    """Return every exact baseline-source location of a package hunk's old side."""
+    length = len(hunk.before_lines)
+    if not length:
+        return []
+    return [
+        start for start in range(len(source_lines) - length + 1)
+        if source_lines[start : start + length] == hunk.before_lines
+    ]
+
+
+def inventory(path: Path) -> dict[str, Artifact]:
+    document = read_json(path)
+    artifacts = document.get("artifacts")
+    if not isinstance(artifacts, list):
+        raise ExtractionError(f"Package inventory {path} has no artifacts list")
+    values: dict[str, Artifact] = {}
+    for item in artifacts:
+        if not isinstance(item, dict):
+            raise ExtractionError(f"Package inventory {path} contains an invalid artifact")
+        artifact_path = relative_path(item.get("path"), f"package inventory {path} artifact")
+        md5 = item.get("md5")
+        if not isinstance(md5, str):
+            raise ExtractionError(f"Package inventory {path} artifact {artifact_path} has no MD5")
+        values[artifact_path] = Artifact(artifact_path, md5)
+    return values
+
+
+def changed_artifact_paths(inspection: Path) -> list[str]:
+    before = inventory(inspection / "before" / "package-artifacts.json")
+    after = inventory(inspection / "after" / "package-artifacts.json")
+    return [path for path in sorted(before.keys() & after.keys()) if before[path].md5 != after[path].md5]
+
+
+def path_passes_filters(path: str, positive: list[str], negative: list[str]) -> bool:
+    return (not positive or any(path.endswith(suffix) for suffix in positive)) and not any(
+        path.endswith(suffix) for suffix in negative
+    )
+
+
+def source_patch(path: str, before_lines: tuple[str, ...], after_lines: tuple[str, ...]) -> bytes:
+    """Render an applyable Git-style text patch using repository-relative paths."""
+    if before_lines == after_lines:
+        return b""
+    contents = [f"diff --git a/{path} b/{path}\n"]
+    contents.extend(
+        difflib.unified_diff(before_lines, after_lines, fromfile=f"a/{path}", tofile=f"b/{path}", n=3)
+    )
+    return "".join(contents).encode("utf-8")
+
+
+def unique_result_directory(root: Path, extractor: str, before_tag: str, after_tag: str) -> Path:
+    stem = f"{before_tag}__to__{after_tag}"
+    candidate = root / extractor / stem
+    suffix = 2
+    while candidate.exists():
+        candidate = root / extractor / f"{stem}-{suffix}"
+        suffix += 1
+    candidate.mkdir(parents=True)
+    return candidate
+
+
+def checked_package(inspection: Path) -> str:
+    manifest = read_json(inspection / "manifest.json")
+    before = manifest.get("before")
+    after = manifest.get("after")
+    if not isinstance(before, dict) or not isinstance(after, dict) or before.get("name") != after.get("name"):
+        raise ExtractionError(f"Inspection {inspection} does not describe one package")
+    if not isinstance(before.get("name"), str):
+        raise ExtractionError(f"Inspection {inspection} has no package name")
+    return before["name"]
+
+
+def write_json(path: Path, value: object) -> None:
+    path.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
+
+
+def extract(
+    definition_path: Path,
+    target_release: str,
+    inspection: Path,
+    results_root: Path,
+    repository_cache: Path,
+    before_tag: Optional[str] = None,
+) -> Path:
+    definition = load_definition(definition_path)
+    inspection = inspection.resolve()
+    if not inspection.is_dir():
+        raise ExtractionError(f"Inspection directory does not exist: {inspection}")
+    package = checked_package(inspection)
+    mappings = [mapping for mapping in definition["mappings"] if mapping["package"] == package]
+    if not mappings:
+        raise ExtractionError(f"Extractor {definition['name']} has no mapping for inspected package {package}")
+
+    upstream = definition["upstream"]
+    cache_name = upstream["github_repository"].replace("/", "__")
+    repository = ensure_repository(upstream["url"], repository_cache / cache_name)
+    if before_tag is None:
+        before_tag, before_commit = baseline_tag_for_release(repository, target_release)
+    else:
+        if tag_key(before_tag) is None or tag_key(target_release) is None:
+            raise ExtractionError("Baseline tag and target release must be release-style")
+        if before_tag not in git_output(repository, "tag", "--list").splitlines():
+            raise ExtractionError(f"Upstream tag does not exist in {repository}: {before_tag}")
+        if tag_key(before_tag) >= tag_key(target_release):
+            raise ExtractionError(f"Baseline tag {before_tag} is not lower than target release {target_release}")
+        before_commit = git_output(repository, "rev-parse", f"{before_tag}^{{commit}}")
+    result = unique_result_directory(results_root, definition["name"], before_tag, target_release)
+
+    source_paths_by_artifact: dict[str, list[str]] = {}
+    for mapping in mappings:
+        discovered = source_paths_at_tag(
+            repository, before_tag, mapping["source-roots"], mapping["source-suffixes"]
+        )
+        source_paths_by_artifact.setdefault(mapping["artifact"], []).extend(discovered)
+    for artifact, paths in source_paths_by_artifact.items():
+        source_paths_by_artifact[artifact] = sorted(set(paths))
+
+    baseline_sources = {
+        source: source_lines_at_tag(repository, before_tag, source)
+        for paths in source_paths_by_artifact.values()
+        for source in paths
+    }
+
+    positive, negative = definition["filter-positive"], definition["filter-negative"]
+    matched_hunks: list[dict[str, object]] = []
+    unmatched_hunks: list[dict[str, object]] = []
+    replacements: dict[str, list[tuple[int, Hunk]]] = {}
+    filtered_paths: list[str] = []
+    skipped_paths: list[str] = []
+    text_hunk_count = 0
+    changed_artifacts = changed_artifact_paths(inspection)
+    for artifact in changed_artifacts:
+        if not path_passes_filters(artifact, positive, negative):
+            skipped_paths.append(artifact)
+            continue
+        filtered_paths.append(artifact)
+        patch = git_diff(
+            repository,
+            str(inspection / "before" / "payload" / artifact),
+            str(inspection / "after" / "payload" / artifact),
+            unified=3,
+            no_index=True,
+        )
+        hunks = parse_hunks(patch)
+        text_hunk_count += len(hunks)
+        for hunk in hunks:
+            base = {"artifact": artifact, "hunk": hunk.header, "patch": hunk.patch}
+            matches = [
+                (source, offset)
+                for source in source_paths_by_artifact.get(artifact, [])
+                for offset in hunk_occurrences(hunk, baseline_sources[source])
+            ]
+            if len(matches) == 1:
+                source, offset = matches[0]
+                end = offset + len(hunk.before_lines)
+                overlaps = any(offset < old_offset + len(old_hunk.before_lines) and old_offset < end for old_offset, old_hunk in replacements.get(source, []))
+                if overlaps:
+                    unmatched_hunks.append({**base, "reason": "overlapping-source-hunk-match", "source": source})
+                else:
+                    replacements.setdefault(source, []).append((offset, hunk))
+                    matched_hunks.append(
+                        {
+                            **base,
+                            "source": source,
+                            "source_lines": {"start": offset + 1, "end": end},
+                            "match": "exact-baseline-before-side",
+                        }
+                    )
+            elif len(matches) > 1:
+                unmatched_hunks.append(
+                    {
+                        **base,
+                        "reason": "ambiguous-baseline-before-side",
+                        "candidates": [
+                            {"source": source, "source_line": offset + 1}
+                            for source, offset in matches
+                        ],
+                    }
+                )
+            else:
+                unmatched_hunks.append(
+                    {
+                        **base,
+                        "reason": "no-baseline-before-side-match" if source_paths_by_artifact.get(artifact) else "no-baseline-source-candidates",
+                    }
+                )
+
+    source_results: list[dict[str, object]] = []
+    combined_patch: list[bytes] = []
+    for source, source_replacements in sorted(replacements.items()):
+        before_lines = baseline_sources[source]
+        after_lines = list(before_lines)
+        for offset, hunk in sorted(source_replacements, reverse=True):
+            after_lines[offset : offset + len(hunk.before_lines)] = hunk.after_lines
+        patch = source_patch(source, before_lines, tuple(after_lines))
+        destination = result / "upstream-diffs" / f"{source}.diff"
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(patch)
+        combined_patch.append(patch)
+        source_results.append(
+            {"path": source, "diff": str(destination.relative_to(result)), "mapped_hunks": len(source_replacements)}
+        )
+
+    upstream_diff = result / "upstream.diff"
+    upstream_diff.write_bytes(b"".join(combined_patch))
+
+    write_json(result / "matched-artifact-hunks.json", {"schema_version": 1, "hunks": matched_hunks})
+    write_json(result / "unmatched-artifact-hunks.json", {"schema_version": 1, "hunks": unmatched_hunks})
+    manifest = {
+        "schema_version": RESULT_SCHEMA_VERSION,
+        "method": "ubuntu24-source-extract-manual",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "extractor": {"name": definition["name"], "definition": str(definition_path.resolve()), "upstream": upstream},
+        "upstream_baseline": {
+            "baseline": before_tag,
+            "baseline_commit": before_commit,
+            "target_release": target_release,
+            "target_tag_read": False,
+        },
+        "inspection": {"directory": str(inspection), "package": package},
+        "filters": {"filter-positive": positive, "filter-negative": negative},
+        "upstream_diff": str(upstream_diff.relative_to(result)),
+        "source_files": source_results,
+        "artifact_hunks": {
+            "changed_common_artifacts": len(changed_artifacts),
+            "filter_positive_artifacts": len(filtered_paths),
+            "filter_negative_excluded_artifacts": len(skipped_paths),
+            "text_hunks": text_hunk_count,
+            "matched": len(matched_hunks),
+            "unmatched": len(unmatched_hunks),
+            "matched_report": "matched-artifact-hunks.json",
+            "unmatched_report": "unmatched-artifact-hunks.json",
+        },
+        "boundary": "The public baseline tag is the only upstream source input. Each output hunk is reconstructed from one uniquely located package hunk before-side; unmatched and ambiguous package hunks are retained for review.",
+    }
+    write_json(result / "manifest.json", manifest)
+    return result
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("extractor", help="source extractor definition name, without .json")
+    parser.add_argument("--tag", required=True, help="target package release; its upstream tag need not exist")
+    parser.add_argument("--inspection-directory", type=Path, required=True, help="existing Debian package inspection directory")
+    parser.add_argument("--definitions-directory", type=Path, default=Path("/project/source-extractors"))
+    parser.add_argument("--results-directory", type=Path, default=Path("/results/source-extractions"))
+    parser.add_argument("--repository-cache", type=Path, default=Path("/work/source-extractor-repositories"))
+    arguments = parser.parse_args()
+    definition_path = arguments.definitions_directory / f"{arguments.extractor}.json"
+    try:
+        result = extract(
+            definition_path,
+            arguments.tag,
+            arguments.inspection_directory,
+            arguments.results_directory,
+            arguments.repository_cache,
+        )
+    except ExtractionError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 1
+    print(f"Source extraction written to {result}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
