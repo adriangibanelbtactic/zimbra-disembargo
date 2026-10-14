@@ -11,7 +11,7 @@ readonly WORK_DIR="${REPOSITORY_DIR}/var/ubuntu24-debian-non-patch-packages-pseu
 
 usage() {
     cat <<'EOF'
-Usage: scripts/ubuntu24-debian-non-patch-packages-pseudo-code-analysis <command> [--ubuntu-series 18|20|22|24]
+Usage: scripts/ubuntu24-debian-non-patch-packages-pseudo-code-analysis <command> [options]
 
 Commands:
   build    Build the Ubuntu 24.04 analysis image for the invoking user.
@@ -32,13 +32,22 @@ Commands:
   status   Show the named container's state.
   stop     Stop and remove the named analysis container; retain host data.
 
+Options:
+  --ubuntu-series 18|20|22|24
+           Select Zimbra's Ubuntu repository suite (default: 24).
+  --local-release RELEASE
+           Fetch the checked-in Ubuntu installer manifest for RELEASE and add
+           its host-extracted packages/ directory as a read-only local APT source.
+
 EOF
 }
 
 ubuntu_series=24
+local_release=''
+local_packages_directory=''
 arguments=()
 
-parse_ubuntu_series() {
+parse_options() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --ubuntu-series)
@@ -48,6 +57,15 @@ parse_ubuntu_series() {
                 ;;
             --ubuntu-series=*)
                 ubuntu_series=${1#--ubuntu-series=}
+                shift
+                ;;
+            --local-release)
+                [[ $# -ge 2 ]] || { printf '%s\n' 'error: --local-release requires a release label' >&2; exit 2; }
+                local_release=$2
+                shift 2
+                ;;
+            --local-release=*)
+                local_release=${1#--local-release=}
                 shift
                 ;;
             *)
@@ -62,6 +80,38 @@ parse_ubuntu_series() {
     esac
 }
 
+prepare_local_release() {
+    if [[ -z "$local_release" ]]; then
+        local_packages_directory=''
+        return
+    fi
+    local_packages_directory=$("${SCRIPT_DIR}/ubuntu-ne-release-packages" "$local_release" \
+        --ubuntu-series "$ubuntu_series" \
+        --cache-directory "${REPOSITORY_DIR}/cache/ne")
+    case "$local_packages_directory" in
+        "${REPOSITORY_DIR}"/cache/ne/*/packages) ;;
+        *) printf 'error: local package directory is outside the NE cache: %s\n' "$local_packages_directory" >&2; exit 1 ;;
+    esac
+}
+
+container_local_packages_directory() {
+    if [[ -z "$local_packages_directory" ]]; then
+        return
+    fi
+    local relative=${local_packages_directory#"${REPOSITORY_DIR}/cache/ne/"}
+    printf '/ne-cache/%s' "$relative"
+}
+
+require_local_release_mount() {
+    if [[ -z "$local_release" ]]; then
+        return
+    fi
+    if [[ "$(docker container inspect --format '{{range .Mounts}}{{if eq .Destination "/ne-cache"}}yes{{end}}{{end}}' "${CONTAINER}")" != yes ]]; then
+        printf '%s\n' 'error: the running analysis container has no /ne-cache mount; stop it and run start with --local-release' >&2
+        exit 1
+    fi
+}
+
 build() {
     docker build \
         --build-arg "ZIMBRA_DISEMBARGOER_UID=$(id -u)" \
@@ -72,6 +122,7 @@ build() {
 }
 
 start() {
+    prepare_local_release
     if ! docker image inspect "${IMAGE}" >/dev/null 2>&1; then
         build
     fi
@@ -83,31 +134,39 @@ start() {
             printf 'Container started: %s\n' "${CONTAINER}"
         fi
     else
-        mkdir -p -- "${WORK_DIR}/results"
+        mkdir -p -- "${WORK_DIR}/results" "${REPOSITORY_DIR}/cache/ne"
         docker run --detach --init --name "${CONTAINER}" \
             --mount "type=bind,src=${REPOSITORY_DIR},dst=/project,readonly" \
             --mount "type=bind,src=${WORK_DIR},dst=/work" \
             --mount "type=bind,src=${WORK_DIR}/results,dst=/results" \
+            --mount "type=bind,src=${REPOSITORY_DIR}/cache/ne,dst=/ne-cache,readonly" \
             "${IMAGE}" sleep infinity >/dev/null
         printf 'Container started: %s\n' "${CONTAINER}"
     fi
-    select_ubuntu_series "$ubuntu_series"
+    require_local_release_mount
+    select_ubuntu_series "$ubuntu_series" "$(container_local_packages_directory)"
 }
 
 select_ubuntu_series() {
     local series=$1
+    local local_packages=${2:-}
     docker exec --user root "${CONTAINER}" bash -ceu '
         series=$1
+        local_packages=$2
         profile="/project/Dockerfiles/repositories/debian-repos/ubuntu${series}"
         test -d "$profile"
         shopt -s nullglob
         sources=("$profile"/*.list)
         test "${#sources[@]}" -gt 0
-        rm -f /etc/apt/sources.list.d/zimbra.list /etc/apt/sources.list.d/zimbra-onlyoffice.list
-        rm -f /var/lib/apt/lists/repo.zimbra.com_apt_*
+        rm -f /etc/apt/sources.list.d/zimbra.list /etc/apt/sources.list.d/zimbra-onlyoffice.list /etc/apt/sources.list.d/zimbra-local-release.list
+        rm -f /var/lib/apt/lists/repo.zimbra.com_apt_* /var/lib/apt/lists/_ne-cache_*
         cp "${sources[@]}" /etc/apt/sources.list.d/
+        if [[ -n "$local_packages" ]]; then
+            test -f "$local_packages/Packages"
+            printf "deb [trusted=yes] file:%s ./\n" "$local_packages" > /etc/apt/sources.list.d/zimbra-local-release.list
+        fi
         apt-get update
-    ' -- "$series"
+    ' -- "$series" "$local_packages"
 }
 
 shell() {
@@ -147,7 +206,9 @@ series_results_root() {
 }
 
 prepare_series() {
-    select_ubuntu_series "$ubuntu_series"
+    prepare_local_release
+    require_local_release_mount
+    select_ubuntu_series "$ubuntu_series" "$(container_local_packages_directory)"
 }
 
 catalog() {
@@ -180,6 +241,7 @@ source_extract() {
 catalog_availability() {
     local series root catalogue_arguments=()
     [[ ${#arguments[@]} -eq 0 ]] || { printf '%s\n' 'error: catalog-availability does not accept additional arguments' >&2; exit 2; }
+    [[ -z "$local_release" ]] || { printf '%s\n' 'error: catalog-availability cannot be combined with --local-release' >&2; exit 2; }
     for series in 18 20 22 24; do
         ubuntu_series=$series
         prepare_series
@@ -206,7 +268,7 @@ command=${1:-}
 if [[ $# -gt 0 ]]; then
     shift
 fi
-parse_ubuntu_series "$@"
+parse_options "$@"
 case "${command}" in
     build) build ;;
     start) start ;;

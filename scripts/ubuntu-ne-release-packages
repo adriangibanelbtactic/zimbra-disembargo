@@ -1,0 +1,166 @@
+#!/usr/bin/env python3
+"""Fetch a pinned Ubuntu NE installer and safely extract its local APT packages."""
+import argparse
+import hashlib
+import json
+import shutil
+import sys
+import tarfile
+import tempfile
+import urllib.request
+from pathlib import Path, PurePosixPath
+from typing import Any
+
+
+MANIFEST_SCHEMA_VERSION = 1
+
+
+class ReleaseError(Exception):
+    """A release manifest, download, or package extraction is invalid."""
+
+
+def md5(path: Path) -> str:
+    digest = hashlib.md5()
+    with path.open("rb") as source:
+        for block in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def read_manifest(path: Path, release: str, series: str) -> dict[str, Any]:
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ReleaseError(f"Could not read release manifest {path}: {error}") from error
+    archive = document.get("archive")
+    expected_platform = f"UBUNTU{series}_64"
+    if (
+        document.get("schema_version") != MANIFEST_SCHEMA_VERSION
+        or document.get("release") != release
+        or document.get("platform") != expected_platform
+        or not isinstance(archive, dict)
+        or not all(isinstance(archive.get(field), str) and archive[field] for field in ("filename", "url", "md5_url", "md5"))
+    ):
+        raise ReleaseError(f"Release manifest {path} is invalid for {release} Ubuntu {series}")
+    if len(archive["md5"]) != 32 or any(character not in "0123456789abcdef" for character in archive["md5"].lower()):
+        raise ReleaseError(f"Release manifest {path} has an invalid MD5")
+    if Path(archive["filename"]).name != archive["filename"] or not archive["filename"].endswith(".tgz"):
+        raise ReleaseError(f"Release manifest {path} has an invalid archive filename")
+    return document
+
+
+def download(url: str, destination: Path) -> None:
+    request = urllib.request.Request(url, headers={"User-Agent": "zimbra-disembargo"})
+    try:
+        with urllib.request.urlopen(request) as response, destination.open("wb") as output:
+            shutil.copyfileobj(response, output)
+    except OSError as error:
+        raise ReleaseError(f"Could not download {url}: {error}") from error
+
+
+def checksum_from_url(url: str, filename: str) -> str:
+    request = urllib.request.Request(url, headers={"User-Agent": "zimbra-disembargo"})
+    try:
+        with urllib.request.urlopen(request) as response:
+            contents = response.read().decode("utf-8")
+    except (OSError, UnicodeDecodeError) as error:
+        raise ReleaseError(f"Could not download checksum {url}: {error}") from error
+    values = [line.split()[0] for line in contents.splitlines() if len(line.split()) >= 2 and line.split()[-1].lstrip("*") == filename]
+    if len(values) != 1 or len(values[0]) != 32:
+        raise ReleaseError(f"Checksum {url} does not contain one MD5 for {filename}")
+    return values[0].lower()
+
+
+def regular_package_member(member: tarfile.TarInfo, prefix: str) -> PurePosixPath | None:
+    if member.name == prefix:
+        return None
+    if not member.name.startswith(prefix + "/"):
+        return None
+    relative = PurePosixPath(member.name[len(prefix) + 1 :])
+    if not relative.parts or relative.is_absolute() or ".." in relative.parts:
+        raise ReleaseError(f"Installer archive has an unsafe package path: {member.name!r}")
+    if member.isdir():
+        return relative
+    if not member.isreg():
+        raise ReleaseError(f"Installer archive package member is not a regular file: {member.name!r}")
+    return relative
+
+
+def extract_packages(archive: Path, destination: Path) -> None:
+    try:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if destination.exists():
+            raise ReleaseError(f"Package repository destination already exists but has no Packages index: {destination}")
+        with tarfile.open(archive, "r:gz") as contents:
+            members = contents.getmembers()
+            roots = {PurePosixPath(member.name).parts[0] for member in members if member.name and not member.name.startswith("/")}
+            if len(roots) != 1:
+                raise ReleaseError(f"Installer archive {archive} must have one top-level directory")
+            prefix = next(iter(roots)) + "/packages"
+            package_members = [(member, regular_package_member(member, prefix)) for member in members]
+            package_members = [(member, relative) for member, relative in package_members if relative is not None]
+            if not package_members:
+                raise ReleaseError(f"Installer archive {archive} has no packages directory")
+            with tempfile.TemporaryDirectory(dir=destination.parent, prefix=f".{destination.name}.") as temporary:
+                staged = Path(temporary) / "packages"
+                for member, relative in package_members:
+                    target = staged / relative
+                    if member.isdir():
+                        target.mkdir(parents=True, exist_ok=True)
+                        continue
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    source = contents.extractfile(member)
+                    if source is None:
+                        raise ReleaseError(f"Could not read package member {member.name!r}")
+                    with source, target.open("xb") as output:
+                        shutil.copyfileobj(source, output)
+                if not (staged / "Packages").is_file():
+                    raise ReleaseError(f"Installer archive {archive} packages directory has no Packages index")
+                shutil.move(str(staged), destination)
+    except (OSError, tarfile.TarError) as error:
+        raise ReleaseError(f"Could not extract package repository from {archive}: {error}") from error
+
+
+def prepare(manifest: dict[str, Any], cache: Path) -> Path:
+    archive_details = manifest["archive"]
+    archive = cache / archive_details["filename"]
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    expected = archive_details["md5"].lower()
+    published = checksum_from_url(archive_details["md5_url"], archive_details["filename"])
+    if published != expected:
+        raise ReleaseError("Published installer checksum does not match the checked-in release manifest")
+    if not archive.is_file() or md5(archive) != expected:
+        temporary = archive.with_name(f".{archive.name}.download")
+        try:
+            download(archive_details["url"], temporary)
+            if md5(temporary) != expected:
+                raise ReleaseError(f"Downloaded installer checksum does not match {archive_details['md5_url']}")
+            temporary.replace(archive)
+        finally:
+            temporary.unlink(missing_ok=True)
+    packages = cache / archive_details["filename"][: -len(".tgz")] / "packages"
+    if not (packages / "Packages").is_file():
+        extract_packages(archive, packages)
+    return packages
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("release", help="release label, for example 10.1.0")
+    parser.add_argument("--ubuntu-series", required=True, choices=("18", "20", "22", "24"))
+    parser.add_argument("--manifests-directory", type=Path, default=Path(__file__).resolve().parents[1] / "manifests" / "ne-releases")
+    parser.add_argument("--cache-directory", type=Path, default=Path(__file__).resolve().parents[1] / "cache" / "ne")
+    arguments = parser.parse_args()
+    manifest_path = arguments.manifests_directory / f"{arguments.release}-ubuntu{arguments.ubuntu_series}.json"
+    try:
+        manifest = read_manifest(manifest_path, arguments.release, arguments.ubuntu_series)
+        packages = prepare(manifest, arguments.cache_directory / f"{arguments.release}_GA" / f"ubuntu{arguments.ubuntu_series}")
+    except ReleaseError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 1
+    print(packages)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

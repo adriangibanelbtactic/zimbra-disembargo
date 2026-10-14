@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 
-CATALOGUE_SCHEMA_VERSION = 1
+CATALOGUE_SCHEMA_VERSIONS = (1, 2)
 MAP_SCHEMA_VERSION = 1
 
 
@@ -20,7 +20,7 @@ def read_catalogue(path: Path) -> dict[str, Any]:
         document = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
         raise MapError(f"Could not read package catalogue {path}: {error}") from error
-    if document.get("schema_version") != CATALOGUE_SCHEMA_VERSION:
+    if document.get("schema_version") not in CATALOGUE_SCHEMA_VERSIONS:
         raise MapError(f"Unsupported package catalogue schema in {path}")
     if not isinstance(document.get("source_indexes"), list) or not isinstance(document.get("packages"), list):
         raise MapError(f"Package catalogue {path} is malformed")

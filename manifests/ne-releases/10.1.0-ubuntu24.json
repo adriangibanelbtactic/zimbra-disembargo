@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "release": "10.1.0",
+  "platform": "UBUNTU24_64",
+  "architecture": "amd64",
+  "archive": {
+    "filename": "zcs-NETWORK-10.1.0_GA_4876.UBUNTU24_64.20260428124223.tgz",
+    "url": "https://files.zimbra.com/downloads/10.1.0_GA/zcs-NETWORK-10.1.0_GA_4876.UBUNTU24_64.20260428124223.tgz",
+    "md5_url": "https://files.zimbra.com/downloads/10.1.0_GA/zcs-NETWORK-10.1.0_GA_4876.UBUNTU24_64.20260428124223.tgz.md5",
+    "md5": "3336ae4b06d3bf7a7740b285804d1d51"
+  }
+}

@@ -56,6 +56,38 @@ Non-default results are isolated under `results/ubuntu18/`,
 their existing paths.  Do not run two commands using different series against
 the same named container at the same time.
 
+### Original installer package repositories
+
+APT metadata may eventually drop a package build that was shipped in an
+original NE installer.  The checked-in manifests in
+[`manifests/ne-releases`](../../manifests/ne-releases) record the public URLs,
+checksum URLs, and expected MD5 values for the 10.1.0 Ubuntu 18, 20, 22, and
+24 Network Edition installers.  The archives themselves and their extracted
+package contents remain under ignored `cache/ne/`; they are never committed.
+
+Use `--local-release` with the matching Ubuntu series to download, verify, and
+safely extract only the installer `packages/` directory on the host.  The
+launcher bind-mounts `cache/ne/` read-only at `/ne-cache` and configures that
+one extracted directory as a local APT source in addition to the selected
+series' Zimbra repositories:
+
+```sh
+# The local-release option requires a container created with the /ne-cache mount.
+scripts/ubuntu24-debian-non-patch-packages-pseudo-code-analysis stop
+scripts/ubuntu24-debian-non-patch-packages-pseudo-code-analysis \
+  start --ubuntu-series 18 --local-release 10.1.0
+
+scripts/ubuntu24-debian-non-patch-packages-pseudo-code-analysis \
+  source-extract --ubuntu-series 18 --local-release 10.1.0 \
+  zm-web-client 10.1.0 10.1.1
+```
+
+The host helper verifies the archive against both the checked-in MD5 and the
+published `.md5` file before extraction.  It accepts only regular files and
+directories beneath the archive's single `packages/` directory, rejecting
+links and other member types.  This preserves the original package pair while
+never executing an installer or installing a package.
+
 ## Package catalogue
 
 Build the package catalogue once after `start`:

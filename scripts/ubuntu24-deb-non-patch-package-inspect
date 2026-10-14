@@ -24,8 +24,10 @@ from typing import Callable, Optional
 
 
 REPOSITORY_URI_PREFIX = "https://repo.zimbra.com/apt/"
+LOCAL_REPOSITORY_URI_PREFIXES = ("file:/ne-cache/", "file:///ne-cache/")
+REPOSITORY_URI_PREFIXES = (REPOSITORY_URI_PREFIX, *LOCAL_REPOSITORY_URI_PREFIXES)
 PATCH_PACKAGE_SUFFIX = "-patch"
-CATALOG_SCHEMA_VERSION = 1
+CATALOG_SCHEMA_VERSION = 2
 LZ4_FRAME_MAGIC = b"\x04\x22\x4d\x18"
 
 
@@ -94,13 +96,15 @@ def zimbra_package_indexes() -> list[tuple[str, Path]]:
             uri, filename = line.split("\t", 1)
         except ValueError as error:
             raise AnalysisError(f"Unexpected apt-get indextargets output: {line!r}") from error
-        if uri.startswith(REPOSITORY_URI_PREFIX) and uri.endswith("/binary-amd64/Packages"):
+        remote_index = uri.startswith(REPOSITORY_URI_PREFIX) and uri.endswith("/binary-amd64/Packages")
+        local_index = uri.startswith(LOCAL_REPOSITORY_URI_PREFIXES) and uri.endswith("/Packages")
+        if remote_index or local_index:
             path = Path(filename)
             if not path.is_file():
                 raise AnalysisError(f"APT package index is missing: {path}")
             indexes.append((uri, path))
     if not indexes:
-        raise AnalysisError(f"No binary package indexes from {REPOSITORY_URI_PREFIX} are available; run apt-get update")
+        raise AnalysisError(f"No Zimbra binary package indexes from {REPOSITORY_URI_PREFIX} or /ne-cache are available; run apt-get update")
     return indexes
 
 
@@ -175,6 +179,7 @@ def catalogue_document(
         "schema_version": CATALOG_SCHEMA_VERSION,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "repository_uri_prefix": REPOSITORY_URI_PREFIX,
+        "repository_uri_prefixes": list(REPOSITORY_URI_PREFIXES),
         "excluded_package_rule": f"package name ends with {PATCH_PACKAGE_SUFFIX!r}",
         "source_indexes": index_metadata,
         "package_count": len(packages),
@@ -207,10 +212,13 @@ def read_catalogue(path: Path) -> dict[str, list[DebianPackage]]:
         document = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
         raise AnalysisError(f"Could not read package catalogue {path}: {error}") from error
-    if document.get("schema_version") != CATALOG_SCHEMA_VERSION:
+    if document.get("schema_version") not in (1, CATALOG_SCHEMA_VERSION):
         raise AnalysisError(f"Unsupported package catalogue schema in {path}")
     if document.get("repository_uri_prefix") != REPOSITORY_URI_PREFIX:
         raise AnalysisError(f"Package catalogue {path} was not made from the configured Zimbra repositories")
+    prefixes = document.get("repository_uri_prefixes")
+    if prefixes is not None and prefixes != list(REPOSITORY_URI_PREFIXES):
+        raise AnalysisError(f"Package catalogue {path} was not made from the configured repository sources")
     packages: dict[str, list[DebianPackage]] = {}
     try:
         for item in document["packages"]:

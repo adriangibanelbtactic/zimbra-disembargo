@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "release": "10.1.0",
+  "platform": "UBUNTU22_64",
+  "architecture": "amd64",
+  "archive": {
+    "filename": "zcs-NETWORK-10.1.0_GA_4655.UBUNTU22_64.20240819064312.tgz",
+    "url": "https://files.zimbra.com/downloads/10.1.0_GA/zcs-NETWORK-10.1.0_GA_4655.UBUNTU22_64.20240819064312.tgz",
+    "md5_url": "https://files.zimbra.com/downloads/10.1.0_GA/zcs-NETWORK-10.1.0_GA_4655.UBUNTU22_64.20240819064312.tgz.md5",
+    "md5": "8595df8618a96fe9cc100d8e4c9596a4"
+  }
+}
