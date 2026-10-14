@@ -2,63 +2,47 @@
 
 This is the acquisition and inspection foundation for Ubuntu 24.04 patch
 packages pseudo-code analysis.
-It provides a disposable Ubuntu 24.04 container which derives its APT
-configuration from a verified Network Edition (NE) installer and uses that
-configuration to obtain versioned NE Debian packages. It does **not** install
+It provides a disposable Ubuntu 24.04 container which uses shared APT source
+lists generated from a Network Edition (NE) installer and obtains versioned NE
+Debian packages. It does **not** install
 the packages or classify any included file as pseudo-code. It extracts
 package payloads only to inventory regular files below
 `/opt/zimbra/lib/patches`; source-like classification and semantic analysis are
 still deliberately deferred.
 
-## Input and mounts
+## Repository definitions and mounts
 
-The initial release input is described by
-[`manifests/ne-releases/10.1.0_GA_4876.UBUNTU24_64.20260428124223.conf`](../../manifests/ne-releases/10.1.0_GA_4876.UBUNTU24_64.20260428124223.conf).
-It records only the public archive/checksum URLs and expected MD5 for
-`zcs-NETWORK-10.1.0_GA_4876.UBUNTU24_64.20260428124223.tgz`; no NE material is
-tracked in Git.
+The shared APT lists are in
+[`Dockerfiles/repositories/debian-repos`](../../Dockerfiles/repositories/debian-repos).
+They were generated once from the NE installer at
+`https://files.zimbra.com/downloads/10.1.0_GA/zcs-NETWORK-10.1.0_GA_4876.UBUNTU24_64.20260428124223.tgz`.
+The installer is not downloaded, mounted, or used at runtime. The lists use the
+one-line `.list` format and are reused by both Ubuntu workflows. See the shared
+[repository-definition provenance](../../Dockerfiles/repositories/README.md).
 
 ```sh
-scripts/ubuntu24-patch-packages-pseudo-code-analysis cache
 scripts/ubuntu24-patch-packages-pseudo-code-analysis start
 scripts/ubuntu24-patch-packages-pseudo-code-analysis shell
 ```
 
-`cache` downloads the archive and its checksum only when absent, verifies the
-published checksum and manifest MD5, then makes both cache files non-writable.
-The default host cache is `cache/ne`, which is Git-ignored. Set
-`ZIMBRA_NE_CACHE` to place it elsewhere.
-
-The running container has read-only mounts of the checkout at `/project` and
-the NE cache at `/inputs/ne`. Its `/work` and `/results` are writable host
-directories under
+The running container has a read-only mount of the checkout at `/project`. Its
+`/work` and `/results` are writable host directories under
 `var/ubuntu24-patch-packages-pseudo-code-analysis` in this checkout. This
 location is fixed deliberately; the Ubuntu workflow does not use a work-path
 environment override. The container runs as the invoking host UID/GID, not root.
 
 `build`, `status`, and `stop` have the same lifecycle meaning as the RHEL 9
-analysis launcher. `stop` removes only the named container and leaves all host
-cache and analysis results intact. `start` refreshes the signed APT metadata
+analysis launcher. `stop` removes only the named container and leaves analysis
+results intact. `start` refreshes the signed APT metadata
 inside the disposable container, so package-version selection uses the current
 published index rather than the image-build-time index.
 
 ## APT repositories
 
-The release installer’s `util/utilfunc.sh` contains `configurePackageServer`.
-Do not source it: it can retrieve a GPG key, write files below `/etc/apt`, and
-run `apt-get`. Render its static source definitions instead:
-
-```sh
-scripts/extract-ubuntu-apt-repositories \
-  cache/ne/10.1.0_GA/zcs-NETWORK-10.1.0_GA_4876.UBUNTU24_64.20260428124223.tgz \
-  --output-directory /tmp/ubuntu24-zimbra-sources \
-  --report /tmp/ubuntu24-zimbra-repositories.json
-```
-
-For `UBUNTU24_64` Network Edition, the helper maps to the `noble` suite and
-renders the public `87`, `1000`, `1010`, `1000-ne`, `1010-ne`, and
+For `UBUNTU24_64` Network Edition, the generated lists use the `noble` suite
+and the public `87`, `1000`, `1010`, `1000-ne`, `1010-ne`, and
 `onlyoffice-1010` APT locations at `https://repo.zimbra.com/apt/`. The image
-uses the equivalent static `.sources` files. It imports the installer-specified
+imports the installer-specified
 signing key and verifies fingerprint
 `254F9170B966D193D6BAD300D5CEF8BF9BE6ED79` before refreshing APT metadata.
 

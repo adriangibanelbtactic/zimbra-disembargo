@@ -1,6 +1,0 @@
-Types: deb
-URIs: https://repo.zimbra.com/apt/onlyoffice-1010
-Suites: noble
-Components: zimbra
-Architectures: amd64
-Signed-By: /etc/apt/trusted.gpg.d/zimbra.gpg

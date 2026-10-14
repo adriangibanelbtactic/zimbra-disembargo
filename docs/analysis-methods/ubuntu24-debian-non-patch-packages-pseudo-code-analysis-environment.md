@@ -12,20 +12,20 @@ pseudo-code or make a semantic assessment of a change.
 
 ## Input and lifecycle
 
-The release manifest and verified immutable installer cache are the same public
-inputs used by the patch-package environment, but the non-patch workflow has
-its own host path:
+The shared generated APT `.list` files are the same as those used by the
+patch-package environment; see its [repository-definition
+provenance](ubuntu24-patch-packages-pseudo-code-analysis-environment.md#repository-definitions-and-mounts).
+The non-patch workflow has its own host path:
 
 ```sh
-scripts/ubuntu24-debian-non-patch-packages-pseudo-code-analysis cache
 scripts/ubuntu24-debian-non-patch-packages-pseudo-code-analysis build
 scripts/ubuntu24-debian-non-patch-packages-pseudo-code-analysis start
 ```
 
 Its writable working and results directory is
 `var/ubuntu24-debian-non-patch-packages-pseudo-code-analysis`; it is
-Git-ignored. The checkout and immutable cache are read-only container mounts.
-`stop` removes only this workflow's named container.
+Git-ignored. The checkout is a read-only container mount. `stop` removes only
+this workflow's named container.
 
 ## Package catalogue
 

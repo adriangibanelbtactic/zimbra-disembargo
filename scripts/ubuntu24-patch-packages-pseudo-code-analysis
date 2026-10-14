@@ -1,40 +1,22 @@
 #!/usr/bin/env bash
 # Manage the disposable Ubuntu 24.04 environment used to acquire and inspect
-# Zimbra Network Edition Debian packages. NE inputs remain outside Git.
+# Zimbra Network Edition Debian packages.
 set -euo pipefail
 
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly REPOSITORY_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 readonly IMAGE='zimbra-disembargo-ubuntu24-patch-packages-pseudo-code-analysis'
 readonly CONTAINER='zimbra-disembargo-ubuntu24-patch-packages-pseudo-code-analysis'
-readonly DEFAULT_RELEASE_MANIFEST="${REPOSITORY_DIR}/manifests/ne-releases/10.1.0_GA_4876.UBUNTU24_64.20260428124223.conf"
-readonly RELEASE_MANIFEST="${ZIMBRA_NE_RELEASE_MANIFEST:-${DEFAULT_RELEASE_MANIFEST}}"
-readonly CACHE_DIR="${ZIMBRA_NE_CACHE:-${REPOSITORY_DIR}/cache/ne}"
 # Ubuntu package-inspection results always remain in the checkout's ignored var
 # tree. Unlike the RHEL launcher, this workflow intentionally has no work-dir
 # environment override, so users can find results without inspecting mounts.
 readonly WORK_DIR="${REPOSITORY_DIR}/var/ubuntu24-patch-packages-pseudo-code-analysis"
-
-if [[ ! -r "${RELEASE_MANIFEST}" ]]; then
-    printf 'Release manifest is not readable: %s\n' "${RELEASE_MANIFEST}" >&2
-    exit 2
-fi
-# Release manifests are version-controlled project data, not user-provided code.
-# shellcheck disable=SC1090
-source "${RELEASE_MANIFEST}"
-: "${NE_RELEASE_ID:?missing NE_RELEASE_ID in release manifest}"
-: "${NE_RELEASE_CACHE_DIRECTORY:?missing NE_RELEASE_CACHE_DIRECTORY in release manifest}"
-: "${NE_ARCHIVE_URL:?missing NE_ARCHIVE_URL in release manifest}"
-: "${NE_ARCHIVE_MD5_URL:?missing NE_ARCHIVE_MD5_URL in release manifest}"
-: "${NE_ARCHIVE_MD5:?missing NE_ARCHIVE_MD5 in release manifest}"
-readonly ARCHIVE="$(basename -- "${NE_ARCHIVE_URL}")"
 
 usage() {
     cat <<'EOF'
 Usage: scripts/ubuntu24-patch-packages-pseudo-code-analysis <command>
 
 Commands:
-  cache   Download and verify the configured NE archive once in the host cache.
   build   Build the Ubuntu 24.04 analysis image for the invoking user.
   start   Start the named analysis container (builds the image when needed).
   shell   Open an interactive shell in the running analysis container.
@@ -45,45 +27,7 @@ Commands:
   status  Show the named container's state.
   stop    Stop and remove the named analysis container; retain host data.
 
-Environment:
-  ZIMBRA_NE_CACHE       Host directory for immutable NE download cache.
-                          Default: cache/ne inside this checkout
-  ZIMBRA_NE_RELEASE_MANIFEST
-                          Release-input manifest to cache instead of the default.
 EOF
-}
-
-download_once() {
-    local destination=$1 url=$2 temporary
-    if [[ -f "${destination}" ]]; then
-        return
-    fi
-    temporary="${destination}.partial.$$"
-    trap 'rm -f -- "${temporary}"' RETURN
-    curl --fail --location --retry 3 --retry-delay 2 --output "${temporary}" "${url}"
-    mv -- "${temporary}" "${destination}"
-    trap - RETURN
-}
-
-cache() {
-    local actual_md5 release_dir archive_path checksum_path
-    release_dir="${CACHE_DIR}/${NE_RELEASE_CACHE_DIRECTORY}"
-    archive_path="${release_dir}/${ARCHIVE}"
-    checksum_path="${archive_path}.md5"
-    mkdir -p -- "${release_dir}"
-    download_once "${checksum_path}" "${NE_ARCHIVE_MD5_URL}"
-    download_once "${archive_path}" "${NE_ARCHIVE_URL}"
-    (
-        cd -- "${release_dir}"
-        md5sum --check "${ARCHIVE}.md5"
-    )
-    actual_md5="$(md5sum -- "${archive_path}" | awk '{print $1}')"
-    if [[ "${actual_md5}" != "${NE_ARCHIVE_MD5}" ]]; then
-        printf 'Archive MD5 does not match the release manifest: %s\n' "${archive_path}" >&2
-        exit 1
-    fi
-    chmod a-w -- "${archive_path}" "${checksum_path}"
-    printf 'Verified cache input: %s\n' "${archive_path}"
 }
 
 build() {
@@ -107,10 +51,9 @@ start() {
             printf 'Container started: %s\n' "${CONTAINER}"
         fi
     else
-        mkdir -p -- "${CACHE_DIR}" "${WORK_DIR}/results"
+        mkdir -p -- "${WORK_DIR}/results"
         docker run --detach --init --name "${CONTAINER}" \
             --mount "type=bind,src=${REPOSITORY_DIR},dst=/project,readonly" \
-            --mount "type=bind,src=${CACHE_DIR},dst=/inputs/ne,readonly" \
             --mount "type=bind,src=${WORK_DIR},dst=/work" \
             --mount "type=bind,src=${WORK_DIR}/results,dst=/results" \
             "${IMAGE}" sleep infinity >/dev/null
@@ -144,7 +87,6 @@ if [[ $# -gt 0 ]]; then
     shift
 fi
 case "${command}" in
-    cache) cache ;;
     build) build ;;
     start) start ;;
     shell) shell ;;

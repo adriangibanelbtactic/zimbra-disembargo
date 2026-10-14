@@ -4,7 +4,7 @@ FROM rockylinux:9
 ARG ZIMBRA_DISEMBARGOER_UID=1000
 ARG ZIMBRA_DISEMBARGOER_GID=1000
 
-COPY Dockerfiles/rhel9-source-analysis/yum.repos.d/ /etc/yum.repos.d/
+COPY Dockerfiles/repositories/yum.repos.d/ /etc/yum.repos.d/
 
 RUN rpm --import https://files.zimbra.com/downloads/security/public-sha-256.key \
     && rpm --quiet --query gpg-pubkey-7c66bd84-6583eafa \

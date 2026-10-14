@@ -15,8 +15,8 @@ Git.
 
 Run these commands from the repository root in an interactive terminal. The
 analysis container has a fixed name. If it already exists, remove it first so
-the current image and fixed local `var/` mounts are used. This leaves the NE
-cache and existing results intact:
+the current image and fixed local `var/` mounts are used. This leaves existing
+results intact:
 
 ```sh
 if scripts/ubuntu24-patch-packages-pseudo-code-analysis status >/dev/null 2>&1; then
@@ -24,11 +24,9 @@ if scripts/ubuntu24-patch-packages-pseudo-code-analysis status >/dev/null 2>&1; 
 fi
 ```
 
-Cache the verified installer input if it is not already present, build the
-current image, then start a container with local results mounted:
+Build the current image, then start a container with local results mounted:
 
 ```sh
-scripts/ubuntu24-patch-packages-pseudo-code-analysis cache
 scripts/ubuntu24-patch-packages-pseudo-code-analysis build
 scripts/ubuntu24-patch-packages-pseudo-code-analysis start
 ```

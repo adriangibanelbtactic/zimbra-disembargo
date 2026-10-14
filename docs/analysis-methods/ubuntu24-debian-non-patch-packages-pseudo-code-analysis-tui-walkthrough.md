@@ -15,8 +15,7 @@ installed. Do not add them to Git.
 Run the commands from the root of a fresh checkout or other directory in which
 you want this workflow's separate `var/` directory. The analysis container has
 a fixed name. Remove an existing one first, if present, so the current image
-and checkout-local mounts are used; this does not remove the NE cache or prior
-results:
+and checkout-local mounts are used; this does not remove prior results:
 
 ```sh
 if scripts/ubuntu24-debian-non-patch-packages-pseudo-code-analysis status >/dev/null 2>&1; then
@@ -24,11 +23,10 @@ if scripts/ubuntu24-debian-non-patch-packages-pseudo-code-analysis status >/dev/
 fi
 ```
 
-Cache the verified installer input if needed, build the image, start the
-container, and create the reusable non-patch package catalogue:
+Build the image, start the container, and create the reusable non-patch package
+catalogue:
 
 ```sh
-scripts/ubuntu24-debian-non-patch-packages-pseudo-code-analysis cache
 scripts/ubuntu24-debian-non-patch-packages-pseudo-code-analysis build
 scripts/ubuntu24-debian-non-patch-packages-pseudo-code-analysis start
 scripts/ubuntu24-debian-non-patch-packages-pseudo-code-analysis catalog

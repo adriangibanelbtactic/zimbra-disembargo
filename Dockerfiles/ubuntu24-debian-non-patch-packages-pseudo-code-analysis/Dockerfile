@@ -18,7 +18,7 @@ RUN apt-get update \
         | awk -F: '$1 == "fpr" { print $10; exit }' \
         | grep --fixed-strings --line-regexp '254F9170B966D193D6BAD300D5CEF8BF9BE6ED79'
 
-COPY Dockerfiles/ubuntu24-debian-non-patch-packages-pseudo-code-analysis/apt.sources.d/ /etc/apt/sources.list.d/
+COPY Dockerfiles/repositories/debian-repos/ /etc/apt/sources.list.d/
 
 RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends \
