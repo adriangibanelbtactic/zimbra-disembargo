@@ -92,8 +92,10 @@ produce file-level comparison reports with provenance. It must not conflate
 pseudo-source findings with either official source-package evidence or direct
 binary analysis.
 
-The initial Ubuntu 24.04 Debian-package acquisition and inspection environment
-is documented in [Ubuntu 24.04 pseudo-source package environment](ubuntu24-pseudo-source-package-environment.md).
+The Ubuntu 24.04 Debian-package acquisition and inspection environment
+discovers and caches every package in the configured Zimbra APT repositories
+before inventorying uninstalled payloads. It is documented in [Ubuntu 24.04
+pseudo-source package environment](ubuntu24-pseudo-source-package-environment.md).
 
 ## Cross-method reporting
 

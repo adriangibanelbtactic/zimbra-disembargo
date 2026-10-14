@@ -38,10 +38,12 @@ Commands:
   build   Build the Ubuntu 24.04 analysis image for the invoking user.
   start   Start the named analysis container (builds the image when needed).
   shell   Open an interactive shell in the running analysis container.
+  deb-cache
+          Discover every configured Zimbra APT package and download each version once.
   deb-inspect [package] [--after <version>]
-          Download and inspect latest and previous supported NE Debian packages.
+          Inspect cached Zimbra packages; compare latest and previous versions when available.
   deb-inspect --interactive
-          Select a supported package and two public repository versions in a TUI.
+          Select a cached Zimbra package and versions in a TUI.
   status  Show the named container's state.
   stop    Stop and remove the named analysis container; retain host data.
 
@@ -125,10 +127,14 @@ shell() {
 
 deb_inspect() {
     if [[ -t 0 && -t 1 ]]; then
-        docker exec --interactive --tty "${CONTAINER}" /project/scripts/ubuntu24-deb-package-inspect "$@"
+        docker exec --interactive --tty "${CONTAINER}" /project/scripts/ubuntu24-deb-package-inspect inspect "$@"
     else
-        docker exec "${CONTAINER}" /project/scripts/ubuntu24-deb-package-inspect "$@"
+        docker exec "${CONTAINER}" /project/scripts/ubuntu24-deb-package-inspect inspect "$@"
     fi
+}
+
+deb_cache() {
+    docker exec "${CONTAINER}" /project/scripts/ubuntu24-deb-package-inspect cache
 }
 
 status() {
@@ -148,6 +154,7 @@ case "${command}" in
     build) build ;;
     start) start ;;
     shell) shell ;;
+    deb-cache) deb_cache ;;
     deb-inspect) deb_inspect "$@" ;;
     status) status ;;
     stop) stop ;;

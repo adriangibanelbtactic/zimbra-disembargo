@@ -1,10 +1,10 @@
-# Manually compare Ubuntu 24.04 patch pseudo-source with the TUI
+# Manually compare Ubuntu 24.04 package payloads with the TUI
 
 This walkthrough uses the Ubuntu 24.04 Network Edition (NE) package-inspection
-environment to compare one changed, source-like file from two versions of one
-patch package. It is a manual review aid: a file selected from
-`/opt/zimbra/lib/patches` is **not** thereby established to be complete,
-authoritative, or official source code.
+environment to compare one changed, source-like file from two cached versions
+of any Zimbra package. It is a manual review aid: a selected package-payload
+file is **not** thereby established to be complete, authoritative, or official
+source code.
 
 The package payloads are extracted into the Git-ignored local directory
 `var/ubuntu24-pseudo-source-analysis` and are never installed. Do not add their
@@ -30,6 +30,7 @@ current image, then start a container with local results mounted:
 scripts/ubuntu24-pseudo-source-analysis cache
 scripts/ubuntu24-pseudo-source-analysis build
 scripts/ubuntu24-pseudo-source-analysis start
+scripts/ubuntu24-pseudo-source-analysis deb-cache
 ```
 
 ## Select the package, versions, and source-like file
@@ -44,8 +45,8 @@ It has three screens:
 
 1. Select the package to review, for example `zimbra-patch`.
 2. Select the older **BEFORE** package version, then a later **AFTER** version.
-3. After the exact packages are downloaded and extracted, select a changed file
-   from `/opt/zimbra/lib/patches`.
+3. After the cached packages are extracted, select a changed file from the
+   package payload.
 
 The final screen contains only regular files present at the same installed path
 in both versions whose MD5 values differ. Its entries show the installed path
@@ -81,12 +82,14 @@ selected_diff="$(find var/ubuntu24-pseudo-source-analysis/results/deb-package-in
 less "$selected_diff"
 ```
 
-`manifest.json` records the selected package versions, repository origin,
-downloaded package SHA-256 values, patch inventory counts, selected path, MD5
-values, and relative diff path. `before/patch-artifacts.json` and
-`after/patch-artifacts.json` are the full MD5 inventories below the patch root.
+`manifest.json` records the selected package versions, repository-index origin,
+cached package SHA-256 values, payload inventory counts, selected path, MD5
+values, and relative diff path. `before/payload-artifacts.json` and
+`after/payload-artifacts.json` are the full MD5 inventories of regular payload
+files.
 The extracted originals remain in `before/payload` and `after/payload` for
-local follow-up only.
+local follow-up only. The downloadable package archive remains in the durable
+local package cache, rather than being copied into every inspection result.
 
 The current selector does not offer files added or removed between versions,
 nor does it compare two unrelated installed paths. It intentionally selects a

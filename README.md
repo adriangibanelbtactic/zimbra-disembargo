@@ -109,11 +109,12 @@ fresh work directory, see [RHEL 9 source-package analysis environment](docs/anal
 ### Ubuntu 24.04 pseudo-source package inspection
 
 The Ubuntu 24.04 analysis container derives Zimbra APT sources from a verified
-NE installer and records selected Network Edition Debian patch packages for the
-next pseudo-source-analysis phase. See [Ubuntu 24.04 pseudo-source package environment](docs/analysis-methods/ubuntu24-pseudo-source-package-environment.md).
+NE installer, caches every Debian package currently indexed by the configured
+Zimbra repositories, and inventories their uninstalled payloads for the next
+pseudo-source-analysis phase. See [Ubuntu 24.04 pseudo-source package environment](docs/analysis-methods/ubuntu24-pseudo-source-package-environment.md).
 
 For a fresh-work-directory, manual TUI workflow that selects and reviews one
-changed source-like patch file, see [Manually compare Ubuntu 24.04 patch
+changed source-like package-payload file, see [Manually compare Ubuntu 24.04
 pseudo-source with the TUI](docs/analysis-methods/ubuntu24-pseudo-source-tui-walkthrough.md).
 
 ## What open source means here
