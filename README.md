@@ -106,11 +106,16 @@ The RHEL 9 analysis container can download and compare public Zimbra source
 RPMs. For the normal package-name workflow and a manual TUI walkthrough in a
 fresh work directory, see [RHEL 9 source-package analysis environment](docs/analysis-methods/rhel-source-package-environment.md).
 
-### Ubuntu 24.04 pseudo-source package inspection
+### Ubuntu 24.04 patch packages pseudo-code analysis
 
 The Ubuntu 24.04 analysis container derives Zimbra APT sources from a verified
-NE installer and records selected Network Edition Debian patch packages for the
-next pseudo-source-analysis phase. See [Ubuntu 24.04 pseudo-source package environment](docs/analysis-methods/ubuntu24-pseudo-source-package-environment.md).
+NE installer and records selected Network Edition Debian patch packages for
+Ubuntu 24.04 patch packages pseudo-code analysis. See [Ubuntu 24.04 patch
+packages pseudo-code analysis environment](docs/analysis-methods/ubuntu24-patch-packages-pseudo-code-analysis-environment.md).
+
+For a fresh-work-directory, manual TUI workflow that selects and reviews one
+changed source-like patch file, see [Ubuntu 24.04 patch packages pseudo-code
+analysis: TUI walkthrough](docs/analysis-methods/ubuntu24-patch-packages-pseudo-code-analysis-tui-walkthrough.md).
 
 ## What open source means here
 

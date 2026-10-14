@@ -1,10 +1,11 @@
-# Ubuntu 24.04 pseudo-source package environment
+# Ubuntu 24.04 patch packages pseudo-code analysis environment
 
-This is the acquisition and inspection foundation for the pseudo-source method.
+This is the acquisition and inspection foundation for Ubuntu 24.04 patch
+packages pseudo-code analysis.
 It provides a disposable Ubuntu 24.04 container which derives its APT
 configuration from a verified Network Edition (NE) installer and uses that
 configuration to obtain versioned NE Debian packages. It does **not** install
-the packages or claim that any included file is pseudo-source. It extracts
+the packages or classify any included file as pseudo-code. It extracts
 package payloads only to inventory regular files below
 `/opt/zimbra/lib/patches`; source-like classification and semantic analysis are
 still deliberately deferred.
@@ -18,9 +19,9 @@ It records only the public archive/checksum URLs and expected MD5 for
 tracked in Git.
 
 ```sh
-scripts/ubuntu24-pseudo-source-analysis cache
-scripts/ubuntu24-pseudo-source-analysis start
-scripts/ubuntu24-pseudo-source-analysis shell
+scripts/ubuntu24-patch-packages-pseudo-code-analysis cache
+scripts/ubuntu24-patch-packages-pseudo-code-analysis start
+scripts/ubuntu24-patch-packages-pseudo-code-analysis shell
 ```
 
 `cache` downloads the archive and its checksum only when absent, verifies the
@@ -30,9 +31,10 @@ The default host cache is `cache/ne`, which is Git-ignored. Set
 
 The running container has read-only mounts of the checkout at `/project` and
 the NE cache at `/inputs/ne`. Its `/work` and `/results` are writable host
-directories under `var/ubuntu24-pseudo-source-analysis` by default. Set
-`ZIMBRA_ANALYSIS_WORK` before `start` to use a different work location. The
-container runs as the invoking host UID/GID, not root.
+directories under
+`var/ubuntu24-patch-packages-pseudo-code-analysis` in this checkout. This
+location is fixed deliberately; the Ubuntu workflow does not use a work-path
+environment override. The container runs as the invoking host UID/GID, not root.
 
 `build`, `status`, and `stop` have the same lifecycle meaning as the RHEL 9
 analysis launcher. `stop` removes only the named container and leaves all host
@@ -73,8 +75,8 @@ The default non-interactive command selects the latest version and immediate
 predecessor from `1010-ne` for each currently available supported package:
 
 ```sh
-scripts/ubuntu24-pseudo-source-analysis start
-scripts/ubuntu24-pseudo-source-analysis deb-inspect
+scripts/ubuntu24-patch-packages-pseudo-code-analysis start
+scripts/ubuntu24-patch-packages-pseudo-code-analysis deb-inspect
 ```
 
 The supported package set is:
@@ -88,14 +90,14 @@ To inspect a selected version against its immediate predecessor, provide the
 exact Debian version:
 
 ```sh
-scripts/ubuntu24-pseudo-source-analysis deb-inspect zimbra-patch \
+scripts/ubuntu24-patch-packages-pseudo-code-analysis deb-inspect zimbra-patch \
   --after 10.1.21.1789536217-2.u24
 ```
 
 For a manual non-adjacent pair, use the terminal UI:
 
 ```sh
-scripts/ubuntu24-pseudo-source-analysis deb-inspect --interactive
+scripts/ubuntu24-patch-packages-pseudo-code-analysis deb-inspect --interactive
 ```
 
 The UI first selects one of the supported packages, then a BEFORE version and
@@ -119,9 +121,9 @@ APT verifies the signed repository metadata and package hashes during download;
 the script also checks that the downloaded package name, Debian version, and
 architecture are exactly the requested values.
 
-The manifest labels this material as `pseudo-source-debian-package-inspection`.
+The manifest labels this material as `ubuntu24-patch-packages-pseudo-code-analysis`.
 It explicitly records that the packages were not installed and that patch-file
-MD5s only identify byte changes; they do not classify a file as pseudo-source
+MD5s only identify byte changes; they do not classify a file as pseudo-code
 or establish a semantic change. The next phase must define source-like-file
 classification, normalization, and file-level comparison while keeping NE
 contents out of Git.
