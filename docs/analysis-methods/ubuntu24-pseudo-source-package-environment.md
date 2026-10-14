@@ -30,9 +30,10 @@ The default host cache is `cache/ne`, which is Git-ignored. Set
 
 The running container has read-only mounts of the checkout at `/project` and
 the NE cache at `/inputs/ne`. Its `/work` and `/results` are writable host
-directories under `var/ubuntu24-pseudo-source-analysis` by default. Set
-`ZIMBRA_ANALYSIS_WORK` before `start` to use a different work location. The
-container runs as the invoking host UID/GID, not root.
+directories under `var/ubuntu24-pseudo-source-analysis` in this checkout. This
+location is fixed deliberately; the Ubuntu workflow does not use a work-path
+environment override. The container runs as the invoking host UID/GID, not
+root.
 
 `build`, `status`, and `stop` have the same lifecycle meaning as the RHEL 9
 analysis launcher. `stop` removes only the named container and leaves all host

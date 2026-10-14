@@ -112,6 +112,10 @@ The Ubuntu 24.04 analysis container derives Zimbra APT sources from a verified
 NE installer and records selected Network Edition Debian patch packages for the
 next pseudo-source-analysis phase. See [Ubuntu 24.04 pseudo-source package environment](docs/analysis-methods/ubuntu24-pseudo-source-package-environment.md).
 
+For a fresh-work-directory, manual TUI workflow that selects and reviews one
+changed source-like patch file, see [Manually compare Ubuntu 24.04 patch
+pseudo-source with the TUI](docs/analysis-methods/ubuntu24-pseudo-source-tui-walkthrough.md).
+
 ## What open source means here
 
 The source code in this repository is open source and is licensed under the GNU
