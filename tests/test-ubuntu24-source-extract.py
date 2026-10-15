@@ -62,7 +62,6 @@ with tempfile.TemporaryDirectory() as temporary_directory:
                 "name": "example",
                 "upstream": {"github_repository": "example/zm-ajax", "url": str(upstream)},
                 "filter-positive": [],
-                "filter-negative": [".jar", ".class", ".java", ".zgz"],
                 "mappings": [
                     {
                         "package": "zimbra-mbox-webclient-war",
@@ -92,6 +91,10 @@ with tempfile.TemporaryDirectory() as temporary_directory:
     (after / "opt/zimbra/readme.txt").write_text("after\n", encoding="utf-8")
     (before / "opt/zimbra/ignored.jar").write_text("before\n", encoding="utf-8")
     (after / "opt/zimbra/ignored.jar").write_text("after\n", encoding="utf-8")
+    (before / "opt/zimbra/ZaMsg_ignored.properties").write_text("before\n", encoding="utf-8")
+    (after / "opt/zimbra/ZaMsg_ignored.properties").write_text("after\n", encoding="utf-8")
+    (before / "opt/zimbra/security.properties").write_text("before\n", encoding="utf-8")
+    (after / "opt/zimbra/security.properties").write_text("after\n", encoding="utf-8")
     write_inventory(inspection / "before" / "package-artifacts.json", before)
     write_inventory(inspection / "after" / "package-artifacts.json", after)
     (inspection / "manifest.json").write_text(
@@ -109,11 +112,13 @@ with tempfile.TemporaryDirectory() as temporary_directory:
     assert manifest["upstream_baseline"]["target_release"] == "10.1.20"
     assert not manifest["upstream_baseline"]["target_tag_read"]
     assert manifest["artifact_hunks"]["matched"] == 1
-    assert manifest["artifact_hunks"]["unmatched"] == 1
+    assert manifest["artifact_hunks"]["unmatched"] == 2
     assert matched["hunks"][0]["artifact"] == artifact.as_posix()
     assert matched["hunks"][0]["source"] == "WebRoot/js/ajax/dwt/widgets/DwtListView.js"
     assert unmatched["hunks"][0]["artifact"] == "opt/zimbra/readme.txt"
+    assert unmatched["hunks"][1]["artifact"] == "opt/zimbra/security.properties"
     assert "ignored.jar" not in json.dumps(unmatched)
+    assert "ZaMsg_ignored.properties" not in json.dumps(unmatched)
     assert manifest["upstream_diff"] == "upstream.diff"
     assert (result / "upstream.diff").is_file()
     assert (result / "upstream-diffs/WebRoot/js/ajax/dwt/widgets/DwtListView.js.diff").is_file()
@@ -129,6 +134,6 @@ with tempfile.TemporaryDirectory() as temporary_directory:
     scoped_unmatched = json.loads((scoped_result / "unmatched-artifact-hunks.json").read_text(encoding="utf-8"))
     assert scoped_manifest["artifact_hunks"]["matched"] == 1
     assert scoped_manifest["artifact_hunks"]["unmatched"] == 0
-    assert scoped_manifest["artifact_hunks"]["artifact_positive_excluded_artifacts"] == 2
+    assert scoped_manifest["artifact_hunks"]["artifact_positive_excluded_artifacts"] == 4
     assert not scoped_unmatched["hunks"]
     assert module.baseline_tag_for_release(upstream, "10.1.20")[0] == "10.1.17"

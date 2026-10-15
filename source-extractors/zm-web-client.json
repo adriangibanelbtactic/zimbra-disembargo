@@ -13,6 +13,7 @@
     ".jar",
     ".class",
     ".java",
+    "ZaMsg*properties",
     ".zgz"
   ],
   "mappings": [

@@ -8,6 +8,7 @@ the package hunk's after-side text. No unavailable upstream target tag is read.
 """
 import argparse
 import difflib
+import fnmatch
 import hashlib
 import json
 import re
@@ -19,7 +20,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Optional
 
 
-DEFAULT_FILTER_NEGATIVE = [".jar", ".class", ".java", ".zgz"]
+DEFAULT_FILTER_NEGATIVE = [".jar", ".class", ".java", "ZaMsg*properties", ".zgz"]
 DEFINITION_SCHEMA_VERSION = 1
 RESULT_SCHEMA_VERSION = 1
 
@@ -258,9 +259,16 @@ def changed_artifact_paths(inspection: Path) -> list[str]:
     return [path for path in sorted(before.keys() & after.keys()) if before[path].md5 != after[path].md5]
 
 
+def path_matches_filter(path: str, pattern: str) -> bool:
+    """Match suffix filters and filename glob filters without matching directories."""
+    if any(character in pattern for character in "*?["):
+        return fnmatch.fnmatchcase(PurePosixPath(path).name, pattern)
+    return path.endswith(pattern)
+
+
 def path_passes_filters(path: str, positive: list[str], negative: list[str]) -> bool:
-    return (not positive or any(path.endswith(suffix) for suffix in positive)) and not any(
-        path.endswith(suffix) for suffix in negative
+    return (not positive or any(path_matches_filter(path, suffix) for suffix in positive)) and not any(
+        path_matches_filter(path, suffix) for suffix in negative
     )
 
 
