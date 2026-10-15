@@ -5,7 +5,12 @@
     "github_repository": "Zimbra/zm-ajax",
     "url": "https://github.com/Zimbra/zm-ajax.git"
   },
-  "filter-positive": [],
+  "artifact-positive": [
+    "opt/zimbra/jetty_base/webapps/zimbra/js/Ajax_all.js"
+  ],
+  "filter-positive": [
+    ".js"
+  ],
   "filter-negative": [
     ".jar",
     ".class",

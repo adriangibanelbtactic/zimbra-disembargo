@@ -5,9 +5,19 @@
     "github_repository": "Zimbra/zm-web-client",
     "url": "https://github.com/Zimbra/zm-web-client.git"
   },
+  "artifact-positive": [
+    "opt/zimbra/jetty_base/webapps/zimbra/WEB-INF/tags/rest/restHead.tag",
+    "opt/zimbra/jetty_base/webapps/zimbra/public/launchNewWindow.jsp",
+    "opt/zimbra/jetty_base/webapps/zimbra/public/launchZCS.jsp",
+    "opt/zimbra/jetty_base/webapps/zimbra/h/changepass",
+    "opt/zimbra/jetty_base/webapps/zimbra/public/login.jsp",
+    "opt/zimbra/jetty_base/webapps/zimbra/js/Mail_all.js"
+  ],
   "filter-positive": [
     ".jsp",
-    ".tag"
+    ".tag",
+    ".js",
+    "changepass"
   ],
   "filter-negative": [
     ".jar",
@@ -46,6 +56,40 @@
       ],
       "source-suffixes": [
         ".jsp"
+      ]
+    },
+    {
+      "package": "zimbra-mbox-webclient-war",
+      "artifact": "opt/zimbra/jetty_base/webapps/zimbra/h/changepass",
+      "source-roots": [
+        "WebRoot/h"
+      ],
+      "source-suffixes": [
+        "changepass"
+      ]
+    },
+    {
+      "package": "zimbra-mbox-webclient-war",
+      "artifact": "opt/zimbra/jetty_base/webapps/zimbra/public/login.jsp",
+      "source-roots": [
+        "WebRoot/public"
+      ],
+      "source-suffixes": [
+        ".jsp"
+      ]
+    },
+    {
+      "package": "zimbra-mbox-webclient-war",
+      "artifact": "opt/zimbra/jetty_base/webapps/zimbra/js/Mail_all.js",
+      "derivation": {
+        "type": "ajx-package-bundle",
+        "manifest": "WebRoot/js/zimbraMail/package/Mail.js"
+      },
+      "source-roots": [
+        "WebRoot/js/zimbraMail"
+      ],
+      "source-suffixes": [
+        ".js"
       ]
     }
   ]
