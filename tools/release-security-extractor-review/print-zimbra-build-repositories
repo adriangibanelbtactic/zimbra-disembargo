@@ -12,7 +12,9 @@ usage() {
 Usage: print-zimbra-build-repositories [--cache-directory DIRECTORY] <zm-build-tag>
 
 Run the upstream zm-build-print-repos.pl helper against the requested zm-build
-tag and print its Zimbra GitHub repository URLs, one per line.
+tag and print its Zimbra GitHub repository URLs, one per line.  If that tag is
+not published, use the nearest preceding numeric release tag (for example,
+10.1.2 uses 10.1.1 when zm-build has no 10.1.2 tag).
 
 The helper is fetched into an ignored cache; neither it nor any Zimbra source is
 added to this repository.
@@ -68,9 +70,20 @@ else
     git clone --quiet --bare "$ZM_BUILD_URL" "$build_repository"
 fi
 
-if ! git -C "$build_repository" rev-parse --verify --quiet "${release_tag}^{commit}" >/dev/null; then
-    printf 'error: zm-build tag does not exist: %s\n' "$release_tag" >&2
-    exit 1
+selected_build_tag="$release_tag"
+if ! git -C "$build_repository" rev-parse --verify --quiet "${selected_build_tag}^{commit}" >/dev/null; then
+    selected_build_tag=$( {
+        git -C "$build_repository" tag --list | grep --extended-regexp '^[0-9]+\.[0-9]+\.[0-9]+$'
+        printf '%s\n' "$release_tag"
+    } | sort --version-sort --unique | awk -v requested="$release_tag" '
+        $0 == requested { print previous; exit }
+        { previous = $0 }
+    ' )
+    if [[ -z "$selected_build_tag" ]]; then
+        printf 'error: no preceding numeric zm-build tag exists for: %s\n' "$release_tag" >&2
+        exit 1
+    fi
+    printf 'note: zm-build tag %s is unavailable; using preceding tag %s\n' "$release_tag" "$selected_build_tag" >&2
 fi
 
 run_directory="$(mktemp -d "${cache_directory}/.tag-helper-run.XXXXXX")"
@@ -80,7 +93,7 @@ cleanup() {
 trap cleanup EXIT
 
 mkdir -- "${run_directory}/zm-build"
-git -C "$build_repository" archive "$release_tag" | tar --extract --directory "${run_directory}/zm-build"
+git -C "$build_repository" archive "$selected_build_tag" | tar --extract --directory "${run_directory}/zm-build"
 cp -a -- "$helper_repository" "${run_directory}/zimbra-tag-helper"
 
 # The helper expects its sibling zm-build checkout beneath its own directory.

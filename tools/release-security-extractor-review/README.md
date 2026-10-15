@@ -31,3 +31,12 @@ overwrite an existing report.
 This survey is evidence for choosing extractor candidates; it cannot replace a
 package comparison. Use the established Ubuntu 24 non-patch workflow to verify
 the package artifact and run the resulting extractor.
+
+Some patch releases publish component tags but no identically named `zm-build`
+tag.  The repository-listing helper automatically selects the nearest preceding
+numeric `zm-build` tag; for example, a 10.1.2 survey uses the 10.1.1 build
+repository list while it still compares component tags 10.1.1 and 10.1.2:
+
+```sh
+tools/release-security-extractor-review/survey-zimbra-upstream-tags 10.1.1 10.1.2
+```
