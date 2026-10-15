@@ -20,7 +20,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Optional
 
 
-DEFAULT_FILTER_NEGATIVE = [".jar", ".class", ".java", "ZaMsg*properties", ".zgz"]
+DEFAULT_FILTER_NEGATIVE = [".jar", ".class", ".java", "ZaMsg*properties", "ZsMsg*properties", ".zgz"]
 DEFINITION_SCHEMA_VERSION = 1
 RESULT_SCHEMA_VERSION = 1
 

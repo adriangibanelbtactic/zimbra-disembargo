@@ -18,6 +18,13 @@ module = importlib.util.module_from_spec(specification)
 sys.modules[specification.name] = module
 loader.exec_module(module)
 
+assert not module.path_passes_filters(
+    "opt/zimbra/conf/msgs/ZsMsg.properties", [], module.DEFAULT_FILTER_NEGATIVE
+)
+assert not module.path_passes_filters(
+    "opt/zimbra/conf/msgs/ZsMsg_fr.properties", [], module.DEFAULT_FILTER_NEGATIVE
+)
+
 
 def run(*arguments: str, cwd: Path) -> None:
     subprocess.run(arguments, cwd=cwd, check=True, capture_output=True)

@@ -21,3 +21,5 @@ assert definitions
 for definition in definitions:
     loaded = module.load_definition(definition)
     assert loaded["name"] == definition.stem
+    assert "ZaMsg*properties" in loaded["filter-negative"]
+    assert "ZsMsg*properties" in loaded["filter-negative"]

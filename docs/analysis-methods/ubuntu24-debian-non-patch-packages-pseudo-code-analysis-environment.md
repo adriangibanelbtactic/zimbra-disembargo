@@ -216,14 +216,14 @@ Extractor definitions can use `artifact-positive` to scope an extractor to
 specific installed artifact paths. An empty list accepts every changed common
 artifact. Within that scope, suffix filters apply: `filter-positive` is an
 allow-list and `filter-negative` is a deny-list. The default negative suffixes
-are `.jar`, `.class`, `.java`, `ZaMsg*properties`, and `.zgz`; the
-`ZaMsg*properties` entry is a filename glob that excludes translated Admin
-Console message resources without excluding other properties files. The
-`zm-ajax` definition deliberately has an empty positive filter. A definition
-can override this default when a future security-relevant extractor needs such
-a resource. Binary changes and changed files added or removed between package
-versions have no unified text hunk and are not entries in the unmatched-hunk
-report.
+are `.jar`, `.class`, `.java`, `ZaMsg*properties`, `ZsMsg*properties`, and
+`.zgz`. The `ZaMsg*properties` and `ZsMsg*properties` filename globs exclude
+translated Admin Console and mailbox message resources without excluding other
+properties files. New extractor definitions must retain both exclusions when
+they specify `filter-negative`; omitting that field inherits the default list.
+The `zm-ajax` definition deliberately has an empty positive filter. Binary
+changes and changed files added or removed between package versions have no
+unified text hunk and are not entries in the unmatched-hunk report.
 
 `source-extract-manual` retains the lower-level interface for an already
 created inspection directory. It accepts the former `--tag` and
