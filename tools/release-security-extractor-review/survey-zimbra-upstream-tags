@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Survey the public Zimbra repositories and source deltas for two release tags.
+# Survey public Zimbra repositories at a target tag and their nearest baselines.
 set -euo pipefail
 
 readonly TOOL_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -10,12 +10,15 @@ usage() {
     cat <<'EOF'
 Usage: survey-zimbra-upstream-tags [--cache-directory DIRECTORY] [--output-directory DIRECTORY] <before-tag> <after-tag>
 
-Use zm-build-print-repos.pl for each zm-build tag, then record whether every
-selected Zimbra repository exposes each corresponding upstream release tag.
-For repositories with both tags, also record commit messages and changed paths.
+Use zm-build-print-repos.pl for the target zm-build tag. For every selected
+repository that exposes the target component tag, find the nearest lower
+X.Y.Z component tag in the same release series, stopping at X.Y.0. For each
+repository with a target and baseline tag, record commit messages and changed
+paths.
 
-The report directory receives repositories-before.txt, repositories-after.txt,
-repositories-union.txt, tag-status.tsv, and changes/<repository>/{log,names}.
+The report directory receives repositories-target.txt, tag-status.tsv, and
+changes/<repository>/{log,names}. tag-status.tsv records the baseline selected
+per repository, which need not be the requested before tag.
 EOF
 }
 
@@ -51,6 +54,17 @@ if [[ $# -ne 2 ]]; then
 fi
 before_tag="$1"
 after_tag="$2"
+if [[ ! "$after_tag" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+    printf 'error: target tag must be a numeric X.Y.Z release: %s\n' "$after_tag" >&2
+    exit 2
+fi
+target_major="${BASH_REMATCH[1]}"
+target_minor="${BASH_REMATCH[2]}"
+target_patch="${BASH_REMATCH[3]}"
+if (( 10#$target_patch == 0 )); then
+    printf 'error: target tag has no lower X.Y.Z baseline: %s\n' "$after_tag" >&2
+    exit 2
+fi
 if [[ -z "$output_directory" ]]; then
     output_directory="${cache_directory}/surveys/${before_tag}__to__${after_tag}"
 fi
@@ -60,28 +74,42 @@ if [[ -e "$output_directory" ]]; then
 fi
 
 mkdir -p -- "$output_directory/changes"
-"$PRINT_REPOSITORIES" --cache-directory "$cache_directory" "$before_tag" | sort -u > "${output_directory}/repositories-before.txt"
-"$PRINT_REPOSITORIES" --cache-directory "$cache_directory" "$after_tag" | sort -u > "${output_directory}/repositories-after.txt"
-cat "${output_directory}/repositories-before.txt" "${output_directory}/repositories-after.txt" | sort -u > "${output_directory}/repositories-union.txt"
+"$PRINT_REPOSITORIES" --cache-directory "$cache_directory" "$after_tag" | sort -u > "${output_directory}/repositories-target.txt"
+baseline_candidates=()
+for ((patch = 10#$target_patch - 1; patch >= 0; patch--)); do
+    baseline_candidates+=("${target_major}.${target_minor}.${patch}")
+done
 
-printf 'repository\turl\tlisted_at_before\tlisted_at_after\thas_before_tag\thas_after_tag\n' > "${output_directory}/tag-status.tsv"
+has_tag() {
+    local refs=$1 tag=$2
+    awk -v tag="refs/tags/${tag}" '$2 == tag || $2 == tag "^{}" { found=1 } END { exit !found }' <<<"$refs"
+}
+
+printf 'repository\turl\tlisted_at_target\thas_target_tag\tselected_baseline_tag\thas_baseline_tag\n' > "${output_directory}/tag-status.tsv"
 while IFS= read -r url; do
     repository="${url##*/}"
     repository="${repository%.git}"
-    listed_before='no'
-    listed_after='no'
-    grep --fixed-strings --line-regexp --quiet "$url" "${output_directory}/repositories-before.txt" && listed_before='yes'
-    grep --fixed-strings --line-regexp --quiet "$url" "${output_directory}/repositories-after.txt" && listed_after='yes'
-    refs="$(git ls-remote --tags "$url" "refs/tags/${before_tag}" "refs/tags/${after_tag}" 2>/dev/null || true)"
-    has_before="$(awk -v tag="refs/tags/${before_tag}" '$2 == tag || $2 == tag "^{}" { found=1 } END { print found ? "yes" : "no" }' <<<"$refs")"
-    has_after="$(awk -v tag="refs/tags/${after_tag}" '$2 == tag || $2 == tag "^{}" { found=1 } END { print found ? "yes" : "no" }' <<<"$refs")"
-    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$repository" "$url" "$listed_before" "$listed_after" "$has_before" "$has_after" >> "${output_directory}/tag-status.tsv"
-done < "${output_directory}/repositories-union.txt"
+    refs="$(git ls-remote --tags "$url" "refs/tags/${after_tag}" "refs/tags/${target_major}.${target_minor}.*" 2>/dev/null || true)"
+    has_after='no'
+    selected_baseline=''
+    has_baseline='no'
+    if has_tag "$refs" "$after_tag"; then
+        has_after='yes'
+        for candidate in "${baseline_candidates[@]}"; do
+            if has_tag "$refs" "$candidate"; then
+                selected_baseline=$candidate
+                has_baseline='yes'
+                break
+            fi
+        done
+    fi
+    printf '%s\t%s\tyes\t%s\t%s\t%s\n' "$repository" "$url" "$has_after" "$selected_baseline" "$has_baseline" >> "${output_directory}/tag-status.tsv"
+done < "${output_directory}/repositories-target.txt"
 
 upstream_cache="${cache_directory}/upstream-repositories"
 mkdir -p -- "$upstream_cache"
-tail --lines=+2 "${output_directory}/tag-status.tsv" | while IFS=$'\t' read -r repository url listed_before listed_after has_before has_after; do
-    if [[ "$has_before" != yes || "$has_after" != yes ]]; then
+tail --lines=+2 "${output_directory}/tag-status.tsv" | while IFS=$'\t' read -r repository url listed_at_target has_after selected_baseline has_baseline; do
+    if [[ "$has_after" != yes || "$has_baseline" != yes ]]; then
         continue
     fi
     repository_cache="${upstream_cache}/${repository}"
@@ -96,8 +124,8 @@ tail --lines=+2 "${output_directory}/tag-status.tsv" | while IFS=$'\t' read -r r
     fi
     repository_output="${output_directory}/changes/${repository}"
     mkdir -- "$repository_output"
-    git -C "$repository_cache" log --format='%H%x09%s' "${before_tag}..${after_tag}" > "${repository_output}/log.tsv"
-    git -C "$repository_cache" diff --name-status --no-renames "$before_tag" "$after_tag" > "${repository_output}/names.tsv"
+    git -C "$repository_cache" log --format='%H%x09%s' "${selected_baseline}..${after_tag}" > "${repository_output}/log.tsv"
+    git -C "$repository_cache" diff --name-status --no-renames "$selected_baseline" "$after_tag" > "${repository_output}/names.tsv"
 done
 
 printf '%s\n' "$output_directory"

@@ -14,7 +14,7 @@ Use all three sources and retain their boundaries in the final review:
 2. The release announcement's **Security Fixes** table. Make one result row for
    every entry, including entries without a CVE.
 3. The public Zimbra upstream repositories selected by `zm-build` at the target
-   release tag and the preceding release tag.
+   release tag.
 
 ## Upstream survey
 
@@ -25,12 +25,14 @@ tools/release-security-extractor-review/survey-zimbra-upstream-tags \
   <previous-release> <target-release>
 ```
 
-It invokes `zm-build-print-repos.pl` from `maldua/zimbra-tag-helper` at each
-corresponding `zm-build` tag. Read `tag-status.tsv` before interpreting an
-absent source diff: a repository without one of the tags cannot prove that a
-fix was absent.
+It invokes `zm-build-print-repos.pl` from `maldua/zimbra-tag-helper` at the
+target `zm-build` tag. Read `tag-status.tsv` before interpreting an absent
+source diff: only a repository with the target component tag is comparable.
+For each comparable repository, the survey chooses the nearest lower `X.Y.Z`
+tag in that repository, falling back from the immediate prior release down to
+`X.Y.0` when necessary.
 
-For repositories with both tags, review `changes/*/log.tsv` and
+For repositories with a target tag and selected baseline, review `changes/*/log.tsv` and
 `changes/*/names.tsv`, then inspect only changes that plausibly correspond to
 the announced security-fix description.
 

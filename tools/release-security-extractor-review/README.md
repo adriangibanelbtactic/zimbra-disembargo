@@ -22,11 +22,14 @@ tools/release-security-extractor-review/survey-zimbra-upstream-tags 10.1.1 10.1.
 ```
 
 The command creates a new ignored report directory under
-`cache/release-security-extractor-review/surveys/`. It records the source
-repository lists for both release tags, checks both tags in every repository in
-their union, and records logs and changed paths where both tags exist. Specify
-`--output-directory` to write the report elsewhere. The command refuses to
-overwrite an existing report.
+`cache/release-security-extractor-review/surveys/`. It selects repositories only
+from the target release's `zm-build` configuration, then checks for the target
+component tag in each one. For a repository with that tag, it compares it to
+the nearest available lower `X.Y.Z` tag in that repository—trying the immediate
+prior release first and falling back through the same release series down to
+`X.Y.0`. It records that per-repository baseline, logs, and changed paths.
+Specify `--output-directory` to write the report elsewhere. The command refuses
+to overwrite an existing report.
 
 This survey is evidence for choosing extractor candidates; it cannot replace a
 package comparison. Use the established Ubuntu 24 non-patch workflow to verify
