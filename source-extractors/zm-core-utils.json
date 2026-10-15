@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "name": "zm-core-utils",
+  "upstream": {
+    "github_repository": "Zimbra/zm-core-utils",
+    "url": "https://github.com/Zimbra/zm-core-utils.git"
+  },
+  "artifact-positive": [
+    "opt/zimbra/bin/zmlicensectl"
+  ],
+  "filter-positive": [
+    "zmlicensectl"
+  ],
+  "filter-negative": [
+    ".jar",
+    ".class",
+    ".java",
+    "ZaMsg*properties",
+    "ZsMsg*properties",
+    ".zgz"
+  ],
+  "mappings": [
+    {
+      "package": "zimbra-core",
+      "artifact": "opt/zimbra/bin/zmlicensectl",
+      "source-roots": [
+        "src/bin"
+      ],
+      "source-suffixes": [
+        "zmlicensectl"
+      ]
+    }
+  ]
+}
