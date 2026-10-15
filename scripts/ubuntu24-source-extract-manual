@@ -79,6 +79,12 @@ def string_list(value: object, label: str) -> list[str]:
     return value
 
 
+def suffix_list(value: object, label: str) -> list[str]:
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise ExtractionError(f"{label} must be a list of strings")
+    return value
+
+
 def load_definition(path: Path) -> dict[str, Any]:
     definition = read_json(path)
     if definition.get("schema_version") != DEFINITION_SCHEMA_VERSION:
@@ -102,12 +108,20 @@ def load_definition(path: Path) -> dict[str, Any]:
             raise ExtractionError(f"mapping {index} must be an object")
         if not isinstance(mapping.get("package"), str) or not mapping["package"]:
             raise ExtractionError(f"mapping {index} has no package")
-        mapping["artifact"] = relative_path(mapping.get("artifact"), f"mapping {index} artifact")
-        mapping["source-roots"] = [
-            relative_path(source, f"mapping {index} source root")
-            for source in string_list(mapping.get("source-roots"), f"mapping {index} source-roots")
-        ]
-        mapping["source-suffixes"] = string_list(mapping.get("source-suffixes", [".js"]), f"mapping {index} source-suffixes")
+        has_artifact = "artifact" in mapping
+        has_artifact_root = "artifact-root" in mapping
+        if has_artifact == has_artifact_root:
+            raise ExtractionError(f"mapping {index} must define exactly one of artifact or artifact-root")
+        if has_artifact:
+            mapping["artifact"] = relative_path(mapping["artifact"], f"mapping {index} artifact")
+            mapping["source-roots"] = [
+                relative_path(source, f"mapping {index} source root")
+                for source in string_list(mapping.get("source-roots"), f"mapping {index} source-roots")
+            ]
+            mapping["source-suffixes"] = suffix_list(mapping.get("source-suffixes", [".js"]), f"mapping {index} source-suffixes")
+        else:
+            mapping["artifact-root"] = relative_path(mapping["artifact-root"], f"mapping {index} artifact root")
+            mapping["source-root"] = relative_path(mapping.get("source-root"), f"mapping {index} source root")
     definition["filter-positive"] = positive
     definition["filter-negative"] = negative
     definition["artifact-positive"] = artifact_positive
@@ -212,7 +226,7 @@ def make_hunk(header: str, body: list[str]) -> Hunk:
 
 def source_paths_at_tag(repository: Path, tag: str, roots: list[str], suffixes: list[str]) -> list[str]:
     paths = git_output(repository, "ls-tree", "-r", "--name-only", tag, "--", *roots).splitlines()
-    return sorted(path for path in paths if any(path.endswith(suffix) for suffix in suffixes))
+    return sorted(path for path in paths if not suffixes or any(path.endswith(suffix) for suffix in suffixes))
 
 
 def source_lines_at_tag(repository: Path, tag: str, path: str) -> tuple[str, ...]:
@@ -342,11 +356,16 @@ def extract(
     result = unique_result_directory(results_root, definition["name"], before_tag, target_release)
 
     source_paths_by_artifact: dict[str, list[str]] = {}
+    root_sources_by_mapping: list[tuple[dict[str, Any], set[str]]] = []
     for mapping in mappings:
-        discovered = source_paths_at_tag(
-            repository, before_tag, mapping["source-roots"], mapping["source-suffixes"]
-        )
-        source_paths_by_artifact.setdefault(mapping["artifact"], []).extend(discovered)
+        if "artifact" in mapping:
+            discovered = source_paths_at_tag(
+                repository, before_tag, mapping["source-roots"], mapping["source-suffixes"]
+            )
+            source_paths_by_artifact.setdefault(mapping["artifact"], []).extend(discovered)
+        else:
+            discovered = set(source_paths_at_tag(repository, before_tag, [mapping["source-root"]], []))
+            root_sources_by_mapping.append((mapping, discovered))
     for artifact, paths in source_paths_by_artifact.items():
         source_paths_by_artifact[artifact] = sorted(set(paths))
 
@@ -355,7 +374,6 @@ def extract(
         for paths in source_paths_by_artifact.values()
         for source in paths
     }
-
     positive, negative = definition["filter-positive"], definition["filter-negative"]
     artifact_positive = definition["artifact-positive"]
     matched_hunks: list[dict[str, object]] = []
@@ -364,12 +382,24 @@ def extract(
     filtered_paths: list[str] = []
     skipped_paths: list[str] = []
     out_of_scope_paths: list[str] = []
+    root_scoped_paths: list[str] = []
     text_hunk_count = 0
     changed_artifacts = changed_artifact_paths(inspection)
     for artifact in changed_artifacts:
         if artifact_positive and artifact not in artifact_positive:
             out_of_scope_paths.append(artifact)
             continue
+        root_candidates = [
+            f"{mapping['source-root']}/{artifact.removeprefix(mapping['artifact-root'] + '/')}"
+            for mapping, sources in root_sources_by_mapping
+            if artifact.startswith(mapping["artifact-root"] + "/")
+            and f"{mapping['source-root']}/{artifact.removeprefix(mapping['artifact-root'] + '/')}" in sources
+        ]
+        if not artifact_positive and root_sources_by_mapping and artifact not in source_paths_by_artifact and not root_candidates:
+            root_scoped_paths.append(artifact)
+            continue
+        for source in root_candidates:
+            baseline_sources.setdefault(source, source_lines_at_tag(repository, before_tag, source))
         if not path_passes_filters(artifact, positive, negative):
             skipped_paths.append(artifact)
             continue
@@ -385,9 +415,10 @@ def extract(
         text_hunk_count += len(hunks)
         for hunk in hunks:
             base = {"artifact": artifact, "hunk": hunk.header, "patch": hunk.patch}
+            candidates = sorted(set([*source_paths_by_artifact.get(artifact, []), *root_candidates]))
             matches = [
                 (source, offset)
-                for source in source_paths_by_artifact.get(artifact, [])
+                for source in candidates
                 for offset in hunk_occurrences(hunk, baseline_sources[source])
             ]
             if len(matches) == 1:
@@ -421,7 +452,7 @@ def extract(
                 unmatched_hunks.append(
                     {
                         **base,
-                        "reason": "no-baseline-before-side-match" if source_paths_by_artifact.get(artifact) else "no-baseline-source-candidates",
+                        "reason": "no-baseline-before-side-match" if candidates else "no-baseline-source-candidates",
                     }
                 )
 
@@ -468,6 +499,7 @@ def extract(
         "artifact_hunks": {
             "changed_common_artifacts": len(changed_artifacts),
             "artifact_positive_excluded_artifacts": len(out_of_scope_paths),
+            "artifact_root_excluded_artifacts": len(root_scoped_paths),
             "filter_positive_artifacts": len(filtered_paths),
             "filter_negative_excluded_artifacts": len(skipped_paths),
             "text_hunks": text_hunk_count,

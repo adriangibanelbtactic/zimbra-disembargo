@@ -53,6 +53,9 @@ with tempfile.TemporaryDirectory() as temporary_directory:
     source = upstream / "WebRoot/js/ajax/dwt/widgets/DwtListView.js"
     source.parent.mkdir(parents=True)
     source.write_text("function list() {\n\tbody += cell.innerText;\n}\n", encoding="utf-8")
+    rooted_source = upstream / "src/bin/example-tool"
+    rooted_source.parent.mkdir(parents=True)
+    rooted_source.write_text("timeout=60\n", encoding="utf-8")
     run("git", "add", ".", cwd=upstream)
     run("git", "commit", "-m", "before", cwd=upstream)
     run("git", "tag", "10.1.17", cwd=upstream)
@@ -102,6 +105,11 @@ with tempfile.TemporaryDirectory() as temporary_directory:
     (after / "opt/zimbra/ZaMsg_ignored.properties").write_text("after\n", encoding="utf-8")
     (before / "opt/zimbra/security.properties").write_text("before\n", encoding="utf-8")
     (after / "opt/zimbra/security.properties").write_text("after\n", encoding="utf-8")
+    rooted_artifact = Path("opt/zimbra/bin/example-tool")
+    (before / rooted_artifact).parent.mkdir(parents=True, exist_ok=True)
+    (after / rooted_artifact).parent.mkdir(parents=True, exist_ok=True)
+    (before / rooted_artifact).write_text("timeout=60\n", encoding="utf-8")
+    (after / rooted_artifact).write_text("timeout=120\n", encoding="utf-8")
     write_inventory(inspection / "before" / "package-artifacts.json", before)
     write_inventory(inspection / "after" / "package-artifacts.json", after)
     (inspection / "manifest.json").write_text(
@@ -119,11 +127,12 @@ with tempfile.TemporaryDirectory() as temporary_directory:
     assert manifest["upstream_baseline"]["target_release"] == "10.1.20"
     assert not manifest["upstream_baseline"]["target_tag_read"]
     assert manifest["artifact_hunks"]["matched"] == 1
-    assert manifest["artifact_hunks"]["unmatched"] == 2
+    assert manifest["artifact_hunks"]["unmatched"] == 3
     assert matched["hunks"][0]["artifact"] == artifact.as_posix()
     assert matched["hunks"][0]["source"] == "WebRoot/js/ajax/dwt/widgets/DwtListView.js"
-    assert unmatched["hunks"][0]["artifact"] == "opt/zimbra/readme.txt"
-    assert unmatched["hunks"][1]["artifact"] == "opt/zimbra/security.properties"
+    assert {hunk["artifact"] for hunk in unmatched["hunks"]} == {
+        rooted_artifact.as_posix(), "opt/zimbra/readme.txt", "opt/zimbra/security.properties"
+    }
     assert "ignored.jar" not in json.dumps(unmatched)
     assert "ZaMsg_ignored.properties" not in json.dumps(unmatched)
     assert manifest["upstream_diff"] == "upstream.diff"
@@ -141,6 +150,23 @@ with tempfile.TemporaryDirectory() as temporary_directory:
     scoped_unmatched = json.loads((scoped_result / "unmatched-artifact-hunks.json").read_text(encoding="utf-8"))
     assert scoped_manifest["artifact_hunks"]["matched"] == 1
     assert scoped_manifest["artifact_hunks"]["unmatched"] == 0
-    assert scoped_manifest["artifact_hunks"]["artifact_positive_excluded_artifacts"] == 4
+    assert scoped_manifest["artifact_hunks"]["artifact_positive_excluded_artifacts"] == 5
     assert not scoped_unmatched["hunks"]
+    rooted_definition = json.loads(definition.read_text(encoding="utf-8"))
+    rooted_definition.pop("artifact-positive")
+    rooted_definition["mappings"] = [{
+        "package": "zimbra-mbox-webclient-war",
+        "artifact-root": "opt/zimbra/bin",
+        "source-root": "src/bin",
+    }]
+    definition.write_text(json.dumps(rooted_definition), encoding="utf-8")
+    rooted_result = module.extract(
+        definition, "10.1.20", inspection, temporary / "results", temporary / "cache", before_tag="10.1.17"
+    )
+    rooted_manifest = json.loads((rooted_result / "manifest.json").read_text(encoding="utf-8"))
+    rooted_matched = json.loads((rooted_result / "matched-artifact-hunks.json").read_text(encoding="utf-8"))
+    assert rooted_manifest["artifact_hunks"]["matched"] == 1
+    assert rooted_manifest["artifact_hunks"]["unmatched"] == 0
+    assert rooted_manifest["artifact_hunks"]["artifact_root_excluded_artifacts"] == 5
+    assert rooted_matched["hunks"][0]["source"] == "src/bin/example-tool"
     assert module.baseline_tag_for_release(upstream, "10.1.20")[0] == "10.1.17"

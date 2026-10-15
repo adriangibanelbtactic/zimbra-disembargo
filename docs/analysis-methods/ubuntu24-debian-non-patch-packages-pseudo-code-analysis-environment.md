@@ -232,6 +232,13 @@ repository, add its installed artifact to that definition's
 suffixes, and optional bundle derivation. Do not create a second definition for
 the same upstream repository merely to isolate a release or feature.
 
+For a directory of directly installed source files, a mapping can instead use
+`artifact-root` and `source-root`. Each changed artifact below the installed
+root is considered only when its relative path exists below the source root at
+the baseline tag. For example, `opt/zimbra/bin/zmlicensectl` maps directly to
+`src/bin/zmlicensectl`. This scopes the extractor to that directory without
+having to enumerate each script.
+
 `source-extract-manual` retains the lower-level interface for an already
 created inspection directory. It accepts the former `--tag` and
 `--inspection-directory` arguments and is intended for investigating package

@@ -5,12 +5,7 @@
     "github_repository": "Zimbra/zm-core-utils",
     "url": "https://github.com/Zimbra/zm-core-utils.git"
   },
-  "artifact-positive": [
-    "opt/zimbra/bin/zmlicensectl"
-  ],
-  "filter-positive": [
-    "zmlicensectl"
-  ],
+  "filter-positive": [],
   "filter-negative": [
     ".jar",
     ".class",
@@ -22,13 +17,8 @@
   "mappings": [
     {
       "package": "zimbra-core",
-      "artifact": "opt/zimbra/bin/zmlicensectl",
-      "source-roots": [
-        "src/bin"
-      ],
-      "source-suffixes": [
-        "zmlicensectl"
-      ]
+      "artifact-root": "opt/zimbra/bin",
+      "source-root": "src/bin"
     }
   ]
 }
