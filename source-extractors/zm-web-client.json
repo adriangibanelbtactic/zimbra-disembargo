@@ -11,12 +11,15 @@
     "opt/zimbra/jetty_base/webapps/zimbra/public/launchZCS.jsp",
     "opt/zimbra/jetty_base/webapps/zimbra/h/changepass",
     "opt/zimbra/jetty_base/webapps/zimbra/public/login.jsp",
-    "opt/zimbra/jetty_base/webapps/zimbra/js/Mail_all.js"
+    "opt/zimbra/jetty_base/webapps/zimbra/js/Mail_all.js",
+    "opt/zimbra/jetty_base/webapps/zimbra/js/zimbraMail/mail/view/ZmInviteMsgView.js",
+    "opt/zimbra/conf/templates/mail/Message.template"
   ],
   "filter-positive": [
     ".jsp",
     ".tag",
     ".js",
+    ".template",
     "changepass"
   ],
   "filter-negative": [
@@ -90,6 +93,26 @@
       ],
       "source-suffixes": [
         ".js"
+      ]
+    },
+    {
+      "package": "zimbra-mbox-webclient-war",
+      "artifact": "opt/zimbra/jetty_base/webapps/zimbra/js/zimbraMail/mail/view/ZmInviteMsgView.js",
+      "source-roots": [
+        "WebRoot/js/zimbraMail/mail/view"
+      ],
+      "source-suffixes": [
+        ".js"
+      ]
+    },
+    {
+      "package": "zimbra-mbox-webclient-war",
+      "artifact": "opt/zimbra/conf/templates/mail/Message.template",
+      "source-roots": [
+        "WebRoot/templates/mail"
+      ],
+      "source-suffixes": [
+        ".template"
       ]
     }
   ]
