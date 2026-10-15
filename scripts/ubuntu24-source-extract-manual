@@ -89,6 +89,10 @@ def load_definition(path: Path) -> dict[str, Any]:
         raise ExtractionError(f"Source extractor {path} has an invalid upstream")
     positive = string_list(definition.get("filter-positive", []), "filter-positive")
     negative = string_list(definition.get("filter-negative", DEFAULT_FILTER_NEGATIVE), "filter-negative")
+    artifact_positive = [
+        relative_path(artifact, "artifact-positive item")
+        for artifact in string_list(definition.get("artifact-positive", []), "artifact-positive")
+    ]
     mappings = definition.get("mappings")
     if not isinstance(mappings, list) or not mappings:
         raise ExtractionError(f"Source extractor {path} must define at least one mapping")
@@ -105,6 +109,7 @@ def load_definition(path: Path) -> dict[str, Any]:
         mapping["source-suffixes"] = string_list(mapping.get("source-suffixes", [".js"]), f"mapping {index} source-suffixes")
     definition["filter-positive"] = positive
     definition["filter-negative"] = negative
+    definition["artifact-positive"] = artifact_positive
     return definition
 
 
@@ -344,14 +349,19 @@ def extract(
     }
 
     positive, negative = definition["filter-positive"], definition["filter-negative"]
+    artifact_positive = definition["artifact-positive"]
     matched_hunks: list[dict[str, object]] = []
     unmatched_hunks: list[dict[str, object]] = []
     replacements: dict[str, list[tuple[int, Hunk]]] = {}
     filtered_paths: list[str] = []
     skipped_paths: list[str] = []
+    out_of_scope_paths: list[str] = []
     text_hunk_count = 0
     changed_artifacts = changed_artifact_paths(inspection)
     for artifact in changed_artifacts:
+        if artifact_positive and artifact not in artifact_positive:
+            out_of_scope_paths.append(artifact)
+            continue
         if not path_passes_filters(artifact, positive, negative):
             skipped_paths.append(artifact)
             continue
@@ -440,11 +450,16 @@ def extract(
             "target_tag_read": False,
         },
         "inspection": {"directory": str(inspection), "package": package},
-        "filters": {"filter-positive": positive, "filter-negative": negative},
+        "filters": {
+            "artifact-positive": artifact_positive,
+            "filter-positive": positive,
+            "filter-negative": negative,
+        },
         "upstream_diff": str(upstream_diff.relative_to(result)),
         "source_files": source_results,
         "artifact_hunks": {
             "changed_common_artifacts": len(changed_artifacts),
+            "artifact_positive_excluded_artifacts": len(out_of_scope_paths),
             "filter_positive_artifacts": len(filtered_paths),
             "filter_negative_excluded_artifacts": len(skipped_paths),
             "text_hunks": text_hunk_count,

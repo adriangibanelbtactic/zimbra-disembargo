@@ -119,4 +119,16 @@ with tempfile.TemporaryDirectory() as temporary_directory:
     assert (result / "upstream-diffs/WebRoot/js/ajax/dwt/widgets/DwtListView.js.diff").is_file()
     assert "AjxStringUtil.htmlEncode(cell.innerText)" in (result / "upstream.diff").read_text(encoding="utf-8")
     run("git", "apply", "--check", str(result / "upstream.diff"), cwd=upstream)
+    scoped_definition = json.loads(definition.read_text(encoding="utf-8"))
+    scoped_definition["artifact-positive"] = [artifact.as_posix()]
+    definition.write_text(json.dumps(scoped_definition), encoding="utf-8")
+    scoped_result = module.extract(
+        definition, "10.1.20", inspection, temporary / "results", temporary / "cache", before_tag="10.1.17"
+    )
+    scoped_manifest = json.loads((scoped_result / "manifest.json").read_text(encoding="utf-8"))
+    scoped_unmatched = json.loads((scoped_result / "unmatched-artifact-hunks.json").read_text(encoding="utf-8"))
+    assert scoped_manifest["artifact_hunks"]["matched"] == 1
+    assert scoped_manifest["artifact_hunks"]["unmatched"] == 0
+    assert scoped_manifest["artifact_hunks"]["artifact_positive_excluded_artifacts"] == 2
+    assert not scoped_unmatched["hunks"]
     assert module.baseline_tag_for_release(upstream, "10.1.20")[0] == "10.1.17"

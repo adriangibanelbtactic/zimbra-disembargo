@@ -212,12 +212,14 @@ The result contains:
   match. This also records ambiguous matches instead of choosing a source file
   arbitrarily.
 
-Extractor definitions use suffix filters. `filter-positive` is an allow-list;
-an empty list accepts every artifact. `filter-negative` is a deny-list applied
-afterwards. The default negative suffixes are `.jar`, `.class`, `.java`, and
-`.zgz`; the `zm-ajax` definition deliberately has an empty positive filter.
-Binary changes and changed files added or removed between package versions have
-no unified text hunk and are not entries in the unmatched-hunk report.
+Extractor definitions can use `artifact-positive` to scope an extractor to
+specific installed artifact paths. An empty list accepts every changed common
+artifact. Within that scope, suffix filters apply: `filter-positive` is an
+allow-list and `filter-negative` is a deny-list. The default negative suffixes
+are `.jar`, `.class`, `.java`, and `.zgz`; the `zm-ajax` definition deliberately
+has an empty positive filter. Binary changes and changed files added or removed
+between package versions have no unified text hunk and are not entries in the
+unmatched-hunk report.
 
 `source-extract-manual` retains the lower-level interface for an already
 created inspection directory. It accepts the former `--tag` and

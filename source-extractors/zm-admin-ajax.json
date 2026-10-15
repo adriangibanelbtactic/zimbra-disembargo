@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "name": "zm-admin-ajax",
+  "upstream": {
+    "github_repository": "Zimbra/zm-admin-ajax",
+    "url": "https://github.com/Zimbra/zm-admin-ajax.git"
+  },
+  "artifact-positive": [
+    "opt/zimbra/jetty_base/webapps/zimbraAdmin/js/Ajax_all.js"
+  ],
+  "filter-positive": [
+    ".js"
+  ],
+  "filter-negative": [
+    ".jar",
+    ".class",
+    ".java",
+    ".zgz"
+  ],
+  "mappings": [
+    {
+      "package": "zimbra-mbox-admin-console-war",
+      "artifact": "opt/zimbra/jetty_base/webapps/zimbraAdmin/js/Ajax_all.js",
+      "derivation": {
+        "type": "ajx-package-bundle",
+        "manifest": "WebRoot/js/ajax/package/Ajax.js"
+      },
+      "source-roots": [
+        "WebRoot/js/ajax"
+      ],
+      "source-suffixes": [
+        ".js"
+      ]
+    }
+  ]
+}

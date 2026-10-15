@@ -1,0 +1,92 @@
+{
+  "schema_version": 1,
+  "name": "zm-admin-console",
+  "upstream": {
+    "github_repository": "Zimbra/zm-admin-console",
+    "url": "https://github.com/Zimbra/zm-admin-console.git"
+  },
+  "artifact-positive": [
+    "opt/zimbra/jetty_base/webapps/zimbraAdmin/js/Admin_all.js",
+    "opt/zimbra/jetty_base/webapps/zimbraAdmin/WEB-INF/classes/messages/ZaMsg_en_AU.properties",
+    "opt/zimbra/jetty_base/webapps/zimbraAdmin/WEB-INF/classes/messages/ZaMsg_en_GB.properties",
+    "opt/zimbra/jetty_base/webapps/zimbraAdmin/WEB-INF/classes/messages/ZaMsg_fr.properties",
+    "opt/zimbra/jetty_base/webapps/zimbraAdmin/WEB-INF/classes/messages/ZaMsg_fr_CA.properties",
+    "opt/zimbra/jetty_base/webapps/zimbraAdmin/WEB-INF/classes/messages/ZaMsg_in.properties"
+  ],
+  "filter-positive": [
+    ".js",
+    ".properties"
+  ],
+  "filter-negative": [
+    ".jar",
+    ".class",
+    ".java",
+    ".zgz"
+  ],
+  "mappings": [
+    {
+      "package": "zimbra-mbox-admin-console-war",
+      "artifact": "opt/zimbra/jetty_base/webapps/zimbraAdmin/js/Admin_all.js",
+      "derivation": {
+        "type": "ajx-package-bundle",
+        "manifest": "WebRoot/js/zimbraAdmin/package/Admin.js"
+      },
+      "source-roots": [
+        "WebRoot/js/zimbraAdmin"
+      ],
+      "source-suffixes": [
+        ".js"
+      ]
+    },
+    {
+      "package": "zimbra-mbox-admin-console-war",
+      "artifact": "opt/zimbra/jetty_base/webapps/zimbraAdmin/WEB-INF/classes/messages/ZaMsg_en_AU.properties",
+      "source-roots": [
+        "WebRoot/messages/ZaMsg_en_AU.properties"
+      ],
+      "source-suffixes": [
+        ".properties"
+      ]
+    },
+    {
+      "package": "zimbra-mbox-admin-console-war",
+      "artifact": "opt/zimbra/jetty_base/webapps/zimbraAdmin/WEB-INF/classes/messages/ZaMsg_en_GB.properties",
+      "source-roots": [
+        "WebRoot/messages/ZaMsg_en_GB.properties"
+      ],
+      "source-suffixes": [
+        ".properties"
+      ]
+    },
+    {
+      "package": "zimbra-mbox-admin-console-war",
+      "artifact": "opt/zimbra/jetty_base/webapps/zimbraAdmin/WEB-INF/classes/messages/ZaMsg_fr.properties",
+      "source-roots": [
+        "WebRoot/messages/ZaMsg_fr.properties"
+      ],
+      "source-suffixes": [
+        ".properties"
+      ]
+    },
+    {
+      "package": "zimbra-mbox-admin-console-war",
+      "artifact": "opt/zimbra/jetty_base/webapps/zimbraAdmin/WEB-INF/classes/messages/ZaMsg_fr_CA.properties",
+      "source-roots": [
+        "WebRoot/messages/ZaMsg_fr_CA.properties"
+      ],
+      "source-suffixes": [
+        ".properties"
+      ]
+    },
+    {
+      "package": "zimbra-mbox-admin-console-war",
+      "artifact": "opt/zimbra/jetty_base/webapps/zimbraAdmin/WEB-INF/classes/messages/ZaMsg_in.properties",
+      "source-roots": [
+        "WebRoot/messages/ZaMsg_in.properties"
+      ],
+      "source-suffixes": [
+        ".properties"
+      ]
+    }
+  ]
+}
