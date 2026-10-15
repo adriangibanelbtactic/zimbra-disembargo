@@ -225,6 +225,13 @@ The `zm-ajax` definition deliberately has an empty positive filter. Binary
 changes and changed files added or removed between package versions have no
 unified text hunk and are not entries in the unmatched-hunk report.
 
+Use exactly **one extractor definition per upstream GitHub repository**. When
+another release exposes a new textual package artifact for an already covered
+repository, add its installed artifact to that definition's
+`artifact-positive` list and add a mapping with its own package, source roots,
+suffixes, and optional bundle derivation. Do not create a second definition for
+the same upstream repository merely to isolate a release or feature.
+
 `source-extract-manual` retains the lower-level interface for an already
 created inspection directory. It accepts the former `--tag` and
 `--inspection-directory` arguments and is intended for investigating package

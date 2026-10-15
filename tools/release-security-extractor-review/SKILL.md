@@ -66,7 +66,9 @@ created** results. Preserve those reasons rather than guessing source paths.
 
 ## Deliverables
 
-1. Add each supported JSON definition under `source-extractors/`.
+1. Add each supported JSON definition under `source-extractors/`. There must
+   be exactly one definition for each upstream GitHub repository; extend its
+   artifact scope and mappings for subsequent release candidates.
 2. Add or update a release review document with a row for every announced
    security fix: CVE (or `TBD`), announcement focus, created/not created, and
    the evidence or boundary.

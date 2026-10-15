@@ -18,8 +18,15 @@ loader.exec_module(module)
 
 definitions = sorted((ROOT / "source-extractors").glob("*.json"))
 assert definitions
+upstream_definitions = {}
 for definition in definitions:
     loaded = module.load_definition(definition)
     assert loaded["name"] == definition.stem
     assert "ZaMsg*properties" in loaded["filter-negative"]
     assert "ZsMsg*properties" in loaded["filter-negative"]
+    upstream = loaded["upstream"]["github_repository"]
+    assert upstream not in upstream_definitions, (
+        f"{definition} and {upstream_definitions[upstream]} both define "
+        f"an extractor for {upstream}; use one definition with multiple mappings"
+    )
+    upstream_definitions[upstream] = definition
