@@ -25,7 +25,7 @@ Commands:
            Compare all regular payload files in a package's latest two versions.
   deb-inspect --interactive
            Select a catalogued non-patch package and two repository versions.
-  source-extract <extractor> <before-release> <after-release>
+  source-extract <extractor> [<before-release>] <after-release>
             Download the selected-series package builds and print an upstream-ready diff.
   source-extract-manual <extractor> --tag <upstream-tag> --inspection-directory <path>
             Inspect an existing package comparison and report artifact hunks.

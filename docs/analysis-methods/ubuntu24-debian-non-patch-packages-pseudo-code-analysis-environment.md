@@ -140,7 +140,8 @@ two versions:
 scripts/ubuntu24-debian-non-patch-packages-pseudo-code-analysis deb-inspect
 ```
 
-To inspect one package or select a non-adjacent version pair:
+To inspect one package, select a specific after version, or interactively select
+a non-adjacent pair:
 
 ```sh
 scripts/ubuntu24-debian-non-patch-packages-pseudo-code-analysis deb-inspect zimbra-common-core
@@ -149,8 +150,39 @@ scripts/ubuntu24-debian-non-patch-packages-pseudo-code-analysis deb-inspect zimb
 scripts/ubuntu24-debian-non-patch-packages-pseudo-code-analysis deb-inspect --interactive
 ```
 
-The TUI filters the catalogued package list, then selects a before and later
-after version. It can write a Git binary diff for one changed regular file.
+`deb-inspect` has no `--before` option.  In its non-interactive form,
+`--after VERSION` selects that catalogued version and its immediate preceding
+catalogued version; it does **not** select an arbitrary pair.  Use
+`deb-inspect --interactive` in a terminal when the two package versions must
+be selected independently.  The TUI filters the catalogued package list, then
+selects a before and later after version. It can write a Git binary diff for
+one changed regular file.
+
+### Command option form
+
+The launcher command is always the first argument.  Put its global repository
+options immediately after that command, before command-specific arguments:
+
+```sh
+tool=scripts/ubuntu24-debian-non-patch-packages-pseudo-code-analysis
+
+# The original installer supplies a missing before build.
+$tool start --ubuntu-series 22 --local-release 10.1.0
+$tool catalog --ubuntu-series 22 --local-release 10.1.0
+
+# --after chooses its immediate predecessor; do not invent --before.
+$tool deb-inspect --ubuntu-series 22 --local-release 10.1.0 \
+  zimbra-mta-components --after 10.1.1-1zimbra8.8b1.22.04
+
+# For release reviews, provide the exact before and after release labels.
+$tool source-extract --ubuntu-series 22 --local-release 10.1.0 \
+  zm-web-client 10.1.0 10.1.1
+```
+
+`catalog-availability` accepts no additional command arguments and cannot be
+combined with `--local-release`; use it only to discover APT availability.
+Then use `start`, `catalog`, `deb-inspect`, or `source-extract` with the
+selected series and, where needed, `--local-release`.
 
 Each comparison creates a unique directory under
 `results/deb-package-inspections/<package>/<before>__to__<after>/`. It includes
@@ -182,11 +214,12 @@ path is reconstructed only when there is one unique exact match. Its derivation
 records that `Ajax_all.js` is an Ajx package bundle whose dependency manifest is
 `WebRoot/js/ajax/package/Ajax.js`.
 
-For the normal workflow, provide the extractor and after release. The command
-finds the nearest lower existing upstream tag, refreshes the package catalogue,
-downloads the newest matching build of the extractor's package for each
-release, runs the package inspection, and prints one upstream-ready
-`upstream.diff` path:
+For the normal workflow, provide the extractor and after release, or provide
+the extractor with explicit before and after releases. The command finds the
+nearest lower existing upstream tag when a before release is omitted, refreshes
+the package catalogue, downloads the newest matching build of the extractor's
+package for each release, runs the package inspection, and prints one
+upstream-ready `upstream.diff` path:
 
 ```sh
 scripts/ubuntu24-debian-non-patch-packages-pseudo-code-analysis source-extract \
@@ -198,6 +231,8 @@ result beneath `results/source-extractions/zm-ajax/<before-tag>__to__<after-tag>
 For this example it selects `10.1.17`: tags `10.1.18` and `10.1.19` do not
 exist in `Zimbra/zm-ajax`. Pass both tags, for example
 `source-extract zm-ajax 10.1.17 10.1.20`, to override automatic selection.
+For a release review, pass both labels so that the package comparison is the
+requested release pair rather than an automatically selected predecessor.
 
 The result contains:
 
