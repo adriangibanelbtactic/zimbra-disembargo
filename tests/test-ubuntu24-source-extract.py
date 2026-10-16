@@ -115,7 +115,12 @@ with tempfile.TemporaryDirectory() as temporary_directory:
     write_inventory(inspection / "before" / "package-artifacts.json", before)
     write_inventory(inspection / "after" / "package-artifacts.json", after)
     (inspection / "manifest.json").write_text(
-        json.dumps({"before": {"name": "zimbra-mbox-webclient-war"}, "after": {"name": "zimbra-mbox-webclient-war"}}),
+        json.dumps(
+            {
+                "before": {"name": "zimbra-mbox-webclient-war", "version": "10.1.17.1-1"},
+                "after": {"name": "zimbra-mbox-webclient-war", "version": "10.1.20.1-1"},
+            }
+        ),
         encoding="utf-8",
     )
 
@@ -128,6 +133,9 @@ with tempfile.TemporaryDirectory() as temporary_directory:
     assert manifest["upstream_baseline"]["baseline"] == "10.1.17"
     assert manifest["upstream_baseline"]["target_release"] == "10.1.20"
     assert not manifest["upstream_baseline"]["target_tag_read"]
+    assert manifest["inspection"]["before_version"] == "10.1.17.1-1"
+    assert manifest["inspection"]["after_version"] == "10.1.20.1-1"
+    assert manifest["inspection"]["comparison_role"] == "manual"
     assert manifest["artifact_hunks"]["matched"] == 1
     assert manifest["artifact_hunks"]["unmatched"] == 3
     assert matched["hunks"][0]["artifact"] == artifact.as_posix()

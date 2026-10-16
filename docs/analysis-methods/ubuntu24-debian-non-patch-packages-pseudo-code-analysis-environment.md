@@ -227,9 +227,12 @@ scripts/ubuntu24-debian-non-patch-packages-pseudo-code-analysis source-extract \
 ```
 
 The command caches public upstream repositories under `/work` and writes a new
-result beneath `results/source-extractions/zm-ajax/<before-tag>__to__<after-tag>/`.
-For this example it selects `10.1.17`: tags `10.1.18` and `10.1.19` do not
-exist in `Zimbra/zm-ajax`. Pass both tags, for example
+result beneath `results/source-extractions/zm-ajax/<before-tag>__to__<after-tag>/`
+grouped by package name and exact before/after Debian build versions. It writes
+one result for every retained after-release package build, with an additional
+immediate-predecessor comparison when that differs from the requested-release
+baseline. For this example it selects `10.1.17`: tags `10.1.18` and `10.1.19`
+do not exist in `Zimbra/zm-ajax`. Pass both tags, for example
 `source-extract zm-ajax 10.1.17 10.1.20`, to override automatic selection.
 For a release review, pass both labels so that the package comparison is the
 requested release pair rather than an automatically selected predecessor.

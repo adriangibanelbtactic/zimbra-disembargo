@@ -48,14 +48,28 @@ still requires both selected package releases to be retained for that series.
 The command automatically:
 
 1. rebuilds the local non-patch package catalogue from the current APT metadata;
-2. selects the newest catalogued build of the extractor's package whose Debian
-   version starts with each release label;
-3. downloads and extracts those two packages without installing them;
-4. searches the public baseline source tree under the extractor's configured
+2. selects every catalogued build of the extractor's package whose Debian
+   version begins with the after release label;
+3. compares every such build to the newest retained build of the requested
+   before release (or its nearest retained predecessor), and also records an
+   immediate-predecessor comparison when that is a different build;
+4. downloads and extracts each selected package pair without installing it;
+5. searches the public baseline source tree under the extractor's configured
    source scope for each package hunk's before-side text;
-5. reconstructs a source-file change only when that baseline match is unique;
+6. reconstructs a source-file change only when that baseline match is unique;
    and
-6. writes and prints the path to one `upstream.diff` file.
+7. writes and prints one `upstream.diff` path per exact package-build pair.
+
+The `X.Y.Z` release label remains the upstream-source umbrella. Debian package
+build suffixes are not upstream tags: different packages can legitimately have
+different suffixes within one Zimbra release. Results are therefore grouped by
+the source-release pair, extractor, and package, then by exact before/after
+Debian versions. The extraction manifest also records those exact versions.
+Its `comparison_role` is `release-baseline` for a complete release-baseline
+comparison or `immediate-predecessor` for an incremental package-build delta.
+Review incremental output after its predecessor build; unmatched hunks remain
+unreconstructed rather than being guessed from an unavailable intermediate
+upstream source tree.
 
 The command requires the requested package builds to remain available in the
 configured Zimbra APT repositories. It currently supports extractors whose
@@ -67,7 +81,9 @@ For the example above, a fresh checkout writes:
 
 ```text
 var/ubuntu24-debian-non-patch-packages-pseudo-code-analysis/results/
-source-extractions/zm-ajax/10.1.17__to__10.1.20/upstream.diff
+source-extractions/zm-ajax/10.1.17__to__10.1.20/
+zimbra-mbox-webclient-war/
+10.1.17.1776247073-1.u24__to__10.1.20.1783414027-1.u24/upstream.diff
 ```
 
 `upstream.diff` is a normal Git diff scoped to the source files found by the

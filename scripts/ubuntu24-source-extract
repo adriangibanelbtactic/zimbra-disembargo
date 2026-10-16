@@ -24,14 +24,56 @@ MANUAL = load_script("ubuntu24_source_extract_manual", ROOT / "ubuntu24-source-e
 INSPECTOR = load_script("ubuntu24_deb_non_patch_package_inspect", ROOT / "ubuntu24-deb-non-patch-package-inspect")
 
 
-def package_for_release(packages: dict, package_name: str, release: str):
-    """Choose the newest catalogued Debian build for an X.Y.Z release label."""
+def packages_for_release(packages: dict, package_name: str, release: str) -> list:
+    """Return every catalogued Debian build for an X.Y.Z release label."""
     candidates = [package for package in packages.get(package_name, []) if package.version.startswith(f"{release}.")]
     if not candidates:
         raise MANUAL.ExtractionError(
             f"No catalogued {package_name} build begins with release {release}; run start to refresh APT metadata"
         )
-    return candidates[-1]
+    return candidates
+
+
+def package_for_release(packages: dict, package_name: str, release: str):
+    """Choose the newest catalogued Debian build for an X.Y.Z release label."""
+    return packages_for_release(packages, package_name, release)[-1]
+
+
+def package_predecessor(packages: list, package):
+    """Return the immediately preceding catalogued build for one package."""
+    earlier = [candidate for candidate in packages if INSPECTOR.compare_versions(candidate, package) < 0]
+    if not earlier:
+        raise MANUAL.ExtractionError(f"No catalogued predecessor exists for {package.name}={package.version}")
+    return earlier[-1]
+
+
+def package_comparisons(packages: dict, package_name: str, before_release: str, after_release: str) -> list[tuple]:
+    """Build release-umbrella package comparisons for every after-release build.
+
+    Each after build is compared with the newest build of the requested prior
+    release (or the nearest earlier catalogued build if that release is gone).
+    A second, incremental comparison is emitted when its immediate predecessor
+    is a different build.  This preserves a cumulative diff applicable to the
+    public source baseline while also retaining the exact package-build delta.
+    """
+    package_versions = packages.get(package_name, [])
+    after_versions = packages_for_release(packages, package_name, after_release)
+    try:
+        baseline = package_for_release(packages, package_name, before_release)
+    except MANUAL.ExtractionError:
+        baseline = package_predecessor(package_versions, after_versions[0])
+
+    comparisons: list[tuple] = []
+    for after_package in after_versions:
+        if INSPECTOR.compare_versions(baseline, after_package) >= 0:
+            raise MANUAL.ExtractionError(
+                f"Baseline package {baseline.version} must be lower than after package {after_package.version}"
+            )
+        comparisons.append((baseline, after_package))
+        predecessor = package_predecessor(package_versions, after_package)
+        if predecessor != baseline:
+            comparisons.append((predecessor, after_package))
+    return comparisons
 
 
 def selected_releases(definition: dict, before_or_after: str, after_release: str | None, cache: Path) -> tuple[str, str]:
@@ -51,7 +93,7 @@ def extract(
     definitions: Path,
     results: Path,
     cache: Path,
-) -> Path:
+) -> list[Path]:
     definition_path = definitions / f"{extractor}.json"
     definition = MANUAL.load_definition(definition_path)
     before_release, after_release = selected_releases(definition, before_or_after, after_release, cache)
@@ -63,19 +105,37 @@ def extract(
     package_name = next(iter(package_names))
     catalogue = results / "zimbra-non-patch-debian-package-catalogue.json"
     packages = INSPECTOR.write_catalogue(catalogue)
-    before_package = package_for_release(packages, package_name, before_release)
-    after_package = package_for_release(packages, package_name, after_release)
-    if INSPECTOR.compare_versions(before_package, after_package) >= 0:
-        raise MANUAL.ExtractionError("Before package version must be lower than after package version")
-    inspection, _ = INSPECTOR.compare(before_package, after_package, results / "deb-package-inspections", catalogue)
-    return MANUAL.extract(
-        definition_path,
-        after_release,
-        inspection,
-        results / "source-extractions",
-        cache,
-        before_tag=before_release,
+    extracted: list[Path] = []
+    comparisons = package_comparisons(
+        packages, package_name, before_release, after_release
     )
+    try:
+        baseline_version = package_for_release(packages, package_name, before_release).version
+    except MANUAL.ExtractionError:
+        baseline_version = package_predecessor(
+            packages[package_name], packages_for_release(packages, package_name, after_release)[0]
+        ).version
+    for before_package, after_package in comparisons:
+        role = (
+            "release-baseline"
+            if before_package.version == baseline_version
+            else "immediate-predecessor"
+        )
+        inspection, _ = INSPECTOR.compare(
+            before_package, after_package, results / "deb-package-inspections", catalogue
+        )
+        extracted.append(
+            MANUAL.extract(
+                definition_path,
+                after_release,
+                inspection,
+                results / "source-extractions",
+                cache,
+                before_tag=before_release,
+                comparison_role=role,
+            )
+        )
+    return extracted
 
 
 def main() -> int:
@@ -90,7 +150,7 @@ def main() -> int:
     parser.add_argument("--repository-cache", type=Path, default=Path("/work/source-extractor-repositories"))
     arguments = parser.parse_args()
     try:
-        result = extract(
+        results = extract(
             arguments.extractor,
             arguments.before_or_after,
             arguments.after,
@@ -101,7 +161,8 @@ def main() -> int:
     except (MANUAL.ExtractionError, INSPECTOR.AnalysisError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
-    print(result / "upstream.diff")
+    for result in results:
+        print(result / "upstream.diff")
     return 0
 
 

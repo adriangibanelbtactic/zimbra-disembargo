@@ -322,18 +322,31 @@ def source_patch(path: str, before_lines: tuple[str, ...], after_lines: tuple[st
     return "".join(contents).encode("utf-8")
 
 
-def unique_result_directory(root: Path, extractor: str, before_tag: str, after_tag: str) -> Path:
-    stem = f"{before_tag}__to__{after_tag}"
-    candidate = root / extractor / stem
+def safe_result_name(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", value)
+
+
+def unique_result_directory(
+    root: Path,
+    extractor: str,
+    before_tag: str,
+    after_tag: str,
+    package: str,
+    before_version: str,
+    after_version: str,
+) -> Path:
+    release_stem = f"{safe_result_name(before_tag)}__to__{safe_result_name(after_tag)}"
+    build_stem = f"{safe_result_name(before_version)}__to__{safe_result_name(after_version)}"
+    candidate = root / extractor / release_stem / safe_result_name(package) / build_stem
     suffix = 2
     while candidate.exists():
-        candidate = root / extractor / f"{stem}-{suffix}"
+        candidate = root / extractor / release_stem / safe_result_name(package) / f"{build_stem}-{suffix}"
         suffix += 1
     candidate.mkdir(parents=True)
     return candidate
 
 
-def checked_package(inspection: Path) -> str:
+def checked_package(inspection: Path) -> tuple[str, str, str]:
     manifest = read_json(inspection / "manifest.json")
     before = manifest.get("before")
     after = manifest.get("after")
@@ -341,7 +354,9 @@ def checked_package(inspection: Path) -> str:
         raise ExtractionError(f"Inspection {inspection} does not describe one package")
     if not isinstance(before.get("name"), str):
         raise ExtractionError(f"Inspection {inspection} has no package name")
-    return before["name"]
+    if not isinstance(before.get("version"), str) or not isinstance(after.get("version"), str):
+        raise ExtractionError(f"Inspection {inspection} has no package build versions")
+    return before["name"], before["version"], after["version"]
 
 
 def write_json(path: Path, value: object) -> None:
@@ -355,12 +370,15 @@ def extract(
     results_root: Path,
     repository_cache: Path,
     before_tag: Optional[str] = None,
+    comparison_role: str = "manual",
 ) -> Path:
     definition = load_definition(definition_path)
     inspection = inspection.resolve()
     if not inspection.is_dir():
         raise ExtractionError(f"Inspection directory does not exist: {inspection}")
-    package = checked_package(inspection)
+    if comparison_role not in {"manual", "release-baseline", "immediate-predecessor"}:
+        raise ExtractionError(f"Unsupported package comparison role: {comparison_role}")
+    package, before_package_version, after_package_version = checked_package(inspection)
     mappings = [mapping for mapping in definition["mappings"] if mapping["package"] == package]
     if not mappings:
         raise ExtractionError(f"Extractor {definition['name']} has no mapping for inspected package {package}")
@@ -378,7 +396,15 @@ def extract(
         if tag_key(before_tag) >= tag_key(target_release):
             raise ExtractionError(f"Baseline tag {before_tag} is not lower than target release {target_release}")
         before_commit = git_output(repository, "rev-parse", f"{before_tag}^{{commit}}")
-    result = unique_result_directory(results_root, definition["name"], before_tag, target_release)
+    result = unique_result_directory(
+        results_root,
+        definition["name"],
+        before_tag,
+        target_release,
+        package,
+        before_package_version,
+        after_package_version,
+    )
 
     source_paths_by_artifact: dict[str, list[str]] = {}
     root_sources_by_mapping: list[tuple[dict[str, Any], set[str]]] = []
@@ -521,7 +547,13 @@ def extract(
             "target_release": target_release,
             "target_tag_read": False,
         },
-        "inspection": {"directory": str(inspection), "package": package},
+        "inspection": {
+            "directory": str(inspection),
+            "package": package,
+            "before_version": before_package_version,
+            "after_version": after_package_version,
+            "comparison_role": comparison_role,
+        },
         "filters": {
             "artifact-positive": artifact_positive,
             "filter-positive": positive,
