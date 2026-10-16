@@ -196,6 +196,44 @@ script also verifies the selected package name, version, and architecture.
 Inventories exclude symlinks and identify byte changes only. They neither
 classify material as pseudo-code nor establish a semantic change.
 
+### Release text-diff report
+
+To produce one review folder containing every retained, non-patch **textual**
+payload diff for an explicit release pair, run:
+
+```sh
+scripts/ubuntu24-debian-non-patch-packages-pseudo-code-analysis \
+  release-text-diffs 10.1.20 10.1.21
+```
+
+The command rebuilds the selected-series non-patch catalogue, then selects every
+package build whose Debian version starts with the requested after-release label.
+Each is compared with the newest retained build of the same package whose version
+starts with the requested before-release label. It does not fall back to another
+release: packages without an exact retained before build are recorded as skipped
+in the report.
+
+The command prints a unique output directory such as:
+
+```text
+var/ubuntu24-debian-non-patch-packages-pseudo-code-analysis/results/
+  release-text-diffs/10.1.20__to__10.1.21/
+```
+
+Its `diffs/<package>/<before-build>__to__<after-build>/` tree contains one
+unified `.diff` per changed text artifact, including added and removed files.
+`text-artifacts.json` indexes every generated diff, MIME type, hash, size, and
+change kind; `manifest.json` records the exact release selection, totals, and
+packages skipped because the requested before release was not retained. An
+existing output folder is never overwritten; a later run receives a numeric
+suffix.
+
+Text classification uses `file(1)`: all available sides must be recognised as
+`text/*` or a recognised textual application format (JavaScript, JSON, XML, or
+PHP). This is an artifact filter, not proof that a file is source code or that a
+change is security relevant. Packages are downloaded and extracted only; they
+are never installed.
+
 ## Deterministic source extractors
 
 A source extractor correlates an existing package inspection with explicitly

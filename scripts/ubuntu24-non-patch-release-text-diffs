@@ -1,0 +1,283 @@
+#!/usr/bin/env python3
+"""Write text-only payload diffs for all retained non-patch package builds in a release pair."""
+import argparse
+import importlib.machinery
+import importlib.util
+import json
+import re
+import subprocess
+import sys
+from pathlib import Path
+from types import ModuleType
+
+
+class ReleaseTextDiffError(Exception):
+    """A release-pair selection or text-diff generation failed."""
+
+
+def load_script(name: str, path: Path) -> ModuleType:
+    loader = importlib.machinery.SourceFileLoader(name, str(path))
+    specification = importlib.util.spec_from_loader(name, loader)
+    if specification is None:
+        raise RuntimeError(f"Could not load {path}")
+    module = importlib.util.module_from_spec(specification)
+    sys.modules[name] = module
+    loader.exec_module(module)
+    return module
+
+
+ROOT = Path(__file__).resolve().parent
+INSPECTOR = load_script("ubuntu24_deb_non_patch_package_inspect", ROOT / "ubuntu24-deb-non-patch-package-inspect")
+RELEASE_VERSION = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
+TEXT_MIME_TYPES = {
+    "application/javascript",
+    "application/json",
+    "application/x-httpd-php",
+    "application/x-javascript",
+    "application/xml",
+}
+
+
+def packages_for_release(packages: dict, package_name: str, release: str) -> list:
+    """Return all package builds whose Debian version belongs to RELEASE."""
+    prefix = re.compile(rf"^{re.escape(release)}(?:[.-]|$)")
+    return [package for package in packages.get(package_name, []) if prefix.match(package.version)]
+
+
+def release_comparisons(packages: dict, before_release: str, after_release: str) -> tuple[list[tuple], list[dict]]:
+    """Pair every target-release build with the newest exact baseline-release build.
+
+    A package absent from the requested baseline is retained in ``skipped`` rather
+    than silently being compared with a different release.  This keeps a release
+    report an exact before/after comparison.
+    """
+    comparisons = []
+    skipped = []
+    for package_name, versions in packages.items():
+        after_versions = packages_for_release(packages, package_name, after_release)
+        if not after_versions:
+            continue
+        before_versions = packages_for_release(packages, package_name, before_release)
+        if not before_versions:
+            skipped.append(
+                {
+                    "package": package_name,
+                    "after_versions": [package.version for package in after_versions],
+                    "reason": f"no retained build for requested before release {before_release}",
+                }
+            )
+            continue
+        before = before_versions[-1]
+        for after in after_versions:
+            if INSPECTOR.compare_versions(before, after) >= 0:
+                skipped.append(
+                    {
+                        "package": package_name,
+                        "before_version": before.version,
+                        "after_version": after.version,
+                        "reason": "before build is not older than after build",
+                    }
+                )
+                continue
+            comparisons.append((before, after))
+    return comparisons, skipped
+
+
+def changed_artifacts(before: dict, after: dict) -> list[tuple[str, object | None, object | None]]:
+    """Return modified, added, and removed regular payload artifacts."""
+    changed = []
+    for path in sorted(before.keys() | after.keys()):
+        before_artifact = before.get(path)
+        after_artifact = after.get(path)
+        if before_artifact and after_artifact and before_artifact.md5 == after_artifact.md5:
+            continue
+        if before_artifact and after_artifact:
+            change = "modified"
+        elif before_artifact:
+            change = "removed"
+        else:
+            change = "added"
+        changed.append((change, before_artifact, after_artifact))
+    return changed
+
+
+def mime_type(path: Path) -> str:
+    try:
+        completed = subprocess.run(
+            ["file", "--brief", "--mime-type", "--", str(path)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise ReleaseTextDiffError(f"Could not identify MIME type for {path}: {error}") from error
+    return completed.stdout.strip()
+
+
+def is_text_mime(value: str) -> bool:
+    return value.startswith("text/") or value in TEXT_MIME_TYPES
+
+
+def artifact_is_text(before_path: Path | None, after_path: Path | None) -> tuple[bool, str | None, str | None]:
+    """Accept a common artifact only when both sides are text.
+
+    For an added or removed path, the one available side determines whether the
+    change is textual.
+    """
+    before_mime = mime_type(before_path) if before_path is not None else None
+    after_mime = mime_type(after_path) if after_path is not None else None
+    return (
+        (before_mime is None or is_text_mime(before_mime))
+        and (after_mime is None or is_text_mime(after_mime)),
+        before_mime,
+        after_mime,
+    )
+
+
+def unique_directory(path: Path) -> Path:
+    candidate = path
+    suffix = 2
+    while candidate.exists():
+        candidate = path.with_name(f"{path.name}-{suffix}")
+        suffix += 1
+    candidate.mkdir(parents=True)
+    return candidate
+
+
+def write_unified_diff(destination: Path, relative_path: str, before_path: Path | None, after_path: Path | None) -> None:
+    """Write a readable unified diff, using /dev/null for added or removed text."""
+    command = [
+        "diff",
+        "--unified=3",
+        "--label",
+        f"before/{relative_path}",
+        "--label",
+        f"after/{relative_path}",
+        str(before_path) if before_path is not None else "/dev/null",
+        str(after_path) if after_path is not None else "/dev/null",
+    ]
+    try:
+        completed = subprocess.run(command, capture_output=True)
+    except OSError as error:
+        raise ReleaseTextDiffError(f"Could not write diff for {relative_path}: {error}") from error
+    if completed.returncode not in (0, 1):
+        detail = completed.stderr.decode("utf-8", errors="replace").strip()
+        raise ReleaseTextDiffError(f"Could not write diff for {relative_path}: {detail}")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(completed.stdout)
+
+
+def artifact_record(change: str, before_artifact: object | None, after_artifact: object | None, before_mime: str | None, after_mime: str | None, diff: Path, output: Path) -> dict:
+    artifact = after_artifact or before_artifact
+    assert artifact is not None
+    return {
+        "path": artifact.relative_path,
+        "change": change,
+        "before": None if before_artifact is None else {"md5": before_artifact.md5, "size": before_artifact.size, "mime_type": before_mime},
+        "after": None if after_artifact is None else {"md5": after_artifact.md5, "size": after_artifact.size, "mime_type": after_mime},
+        "diff": str(diff.relative_to(output)),
+    }
+
+
+def create_release_text_diffs(before_release: str, after_release: str, results: Path, output_root: Path | None = None) -> Path:
+    if not RELEASE_VERSION.fullmatch(before_release) or not RELEASE_VERSION.fullmatch(after_release):
+        raise ReleaseTextDiffError("Release labels must use numeric X.Y.Z form")
+    if before_release == after_release:
+        raise ReleaseTextDiffError("Before and after releases must differ")
+
+    catalogue = results / "zimbra-non-patch-debian-package-catalogue.json"
+    packages = INSPECTOR.write_catalogue(catalogue)
+    comparisons, skipped = release_comparisons(packages, before_release, after_release)
+    if not comparisons:
+        raise ReleaseTextDiffError(
+            f"No retained non-patch package build pairs match {before_release} to {after_release}"
+        )
+
+    root = output_root or results / "release-text-diffs"
+    output = unique_directory(root / f"{INSPECTOR.safe_name(before_release)}__to__{INSPECTOR.safe_name(after_release)}")
+    report = []
+    total_changed = 0
+    total_text = 0
+    for before, after in comparisons:
+        inspection, _ = INSPECTOR.compare(before, after, results / "deb-package-inspections", catalogue)
+        before_payload = inspection / "before" / "payload"
+        after_payload = inspection / "after" / "payload"
+        before_artifacts = INSPECTOR.inventory_package_artifacts(before_payload)
+        after_artifacts = INSPECTOR.inventory_package_artifacts(after_payload)
+        artifacts = []
+        for change, before_artifact, after_artifact in changed_artifacts(before_artifacts, after_artifacts):
+            total_changed += 1
+            relative_path = (after_artifact or before_artifact).relative_path
+            before_path = before_payload / relative_path if before_artifact is not None else None
+            after_path = after_payload / relative_path if after_artifact is not None else None
+            text, before_mime, after_mime = artifact_is_text(before_path, after_path)
+            if not text:
+                continue
+            diff = (
+                output
+                / "diffs"
+                / INSPECTOR.safe_name(after.name)
+                / f"{INSPECTOR.safe_name(before.version)}__to__{INSPECTOR.safe_name(after.version)}"
+                / f"{relative_path}.diff"
+            )
+            write_unified_diff(diff, relative_path, before_path, after_path)
+            artifacts.append(
+                artifact_record(change, before_artifact, after_artifact, before_mime, after_mime, diff, output)
+            )
+            total_text += 1
+        report.append(
+            {
+                "package": after.name,
+                "before_version": before.version,
+                "after_version": after.version,
+                "inspection": str(inspection.relative_to(results)),
+                "changed_regular_artifacts": len(changed_artifacts(before_artifacts, after_artifacts)),
+                "text_artifacts": artifacts,
+            }
+        )
+
+    (output / "text-artifacts.json").write_text(
+        json.dumps({"schema_version": 1, "comparisons": report}, indent=2) + "\n", encoding="utf-8"
+    )
+    (output / "manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "method": "ubuntu24-debian-non-patch-release-text-diffs",
+                "requested_releases": {"before": before_release, "after": after_release},
+                "catalogue": str(catalogue),
+                "text_artifact_report": "text-artifacts.json",
+                "comparisons": len(report),
+                "changed_regular_artifacts": total_changed,
+                "text_diffs": total_text,
+                "skipped_packages": skipped,
+                "boundary": "Only regular package payload files are considered. A file is textual when file(1) identifies every available side as text/* or a recognised textual application MIME type. Packages are downloaded and extracted but never installed.",
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return output
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("before_release", help="baseline release label, for example 10.1.20")
+    parser.add_argument("after_release", help="target release label, for example 10.1.21")
+    parser.add_argument("--results-directory", type=Path, default=Path("/results"))
+    parser.add_argument("--output-directory", type=Path, help="parent directory for the release-named diff folder")
+    arguments = parser.parse_args()
+    try:
+        output = create_release_text_diffs(
+            arguments.before_release, arguments.after_release, arguments.results_directory, arguments.output_directory
+        )
+    except (ReleaseTextDiffError, INSPECTOR.AnalysisError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 1
+    print(output)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

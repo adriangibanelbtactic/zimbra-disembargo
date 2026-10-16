@@ -27,6 +27,8 @@ Commands:
            Select a catalogued non-patch package and two repository versions.
   source-extract <extractor> [<before-release>] <after-release>
             Download the selected-series package builds and print an upstream-ready diff.
+  release-text-diffs <before-release> <after-release>
+             Write every retained non-patch text-payload diff for one release pair.
   source-extract-manual <extractor> --tag <upstream-tag> --inspection-directory <path>
             Inspect an existing package comparison and report artifact hunks.
   status   Show the named container's state.
@@ -197,6 +199,19 @@ inspect_source_manual() {
     fi
 }
 
+release_text_diffs() {
+    prepare_series
+    local root
+    root=$(series_results_root)
+    if [[ -t 0 && -t 1 ]]; then
+        docker exec --interactive --tty "${CONTAINER}" /project/scripts/ubuntu24-non-patch-release-text-diffs \
+            --results-directory "$root" "${arguments[@]}"
+    else
+        docker exec "${CONTAINER}" /project/scripts/ubuntu24-non-patch-release-text-diffs \
+            --results-directory "$root" "${arguments[@]}"
+    fi
+}
+
 series_results_root() {
     if [[ "$ubuntu_series" == 24 ]]; then
         printf '%s' /results
@@ -277,6 +292,7 @@ case "${command}" in
     catalog-availability) catalog_availability ;;
     deb-inspect) deb_inspect ;;
     source-extract) source_extract ;;
+    release-text-diffs) release_text_diffs ;;
     source-extract-manual) inspect_source_manual "${arguments[@]}" ;;
     status) status ;;
     stop) stop ;;
