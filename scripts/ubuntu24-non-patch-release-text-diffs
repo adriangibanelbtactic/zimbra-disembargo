@@ -191,16 +191,20 @@ def source_extractor_mappings(definitions: Path) -> dict[str, list[dict]]:
             package = mapping.get("package")
             artifact = mapping.get("artifact")
             root = mapping.get("artifact-root")
-            if not isinstance(package, str) or not package or (artifact is not None and not isinstance(artifact, str)) or (root is not None and not isinstance(root, str)):
+            source_root = mapping.get("source-root")
+            if not isinstance(package, str) or not package or (artifact is not None and not isinstance(artifact, str)) or (root is not None and not isinstance(root, str)) or (source_root is not None and not isinstance(source_root, str)):
                 raise ReleaseTextDiffError(f"Source extractor definition {definition_path} has an invalid package artifact mapping")
             if artifact is None and (root is None or not root.strip("/")):
                 raise ReleaseTextDiffError(f"Source extractor definition {definition_path} mapping has no artifact or artifact-root")
+            if source_root is not None and not source_root.strip("/"):
+                raise ReleaseTextDiffError(f"Source extractor definition {definition_path} mapping has an empty source-root")
             package_mappings.setdefault(package, []).append(
                 {
                     "github_repository": github_repository,
                     "repository": repository,
                     "artifact": artifact.strip("/") if isinstance(artifact, str) else None,
                     "artifact_root": root.strip("/") if isinstance(root, str) else None,
+                    "source_root": source_root.strip("/") if isinstance(source_root, str) else None,
                 }
             )
     return package_mappings
@@ -297,6 +301,44 @@ def upstream_for_artifact(mappings: dict[str, list[dict]], package: str, path: s
     }
 
 
+def root_source_mapping_for_artifact(mappings: dict[str, list[dict]], package: str, path: str) -> dict | None:
+    """Return the most-specific one-to-one artifact-root/source-root mapping.
+
+    Only this mapping form gives a deterministic installed-path to upstream-path
+    substitution. Direct artifact mappings can be bundles or otherwise require
+    source-hunk reconstruction, so they deliberately remain binary-only.
+    """
+    candidates = [
+        mapping
+        for mapping in mappings.get(package, [])
+        if mapping["artifact_root"]
+        and mapping["source_root"]
+        and (path == mapping["artifact_root"] or path.startswith(mapping["artifact_root"] + "/"))
+    ]
+    if not candidates:
+        return None
+    longest = max(len(mapping["artifact_root"]) for mapping in candidates)
+    selected = [mapping for mapping in candidates if len(mapping["artifact_root"]) == longest]
+    identities = {
+        (mapping["github_repository"], mapping["artifact_root"], mapping["source_root"])
+        for mapping in selected
+    }
+    if len(identities) != 1:
+        raise ReleaseTextDiffError(
+            f"Ambiguous artifact-root/source-root mapping for {package}:{path}"
+        )
+    return selected[0]
+
+
+def upstream_path_for_artifact(mapping: dict, path: str) -> str:
+    """Translate PATH below a configured artifact root to its upstream path."""
+    try:
+        relative = PurePosixPath(path).relative_to(mapping["artifact_root"])
+    except ValueError as error:
+        raise ReleaseTextDiffError(f"Artifact {path} is outside configured root {mapping['artifact_root']}") from error
+    return (PurePosixPath(mapping["source_root"]) / relative).as_posix()
+
+
 def generated_diff_filename(upstream: dict, after_release: str, sequences: dict[str, int]) -> str:
     """Return the next stable generated-change filename for one upstream repo."""
     key = upstream["github_repository"] or upstream["repository"]
@@ -332,27 +374,33 @@ def write_unified_diff(destination: Path, relative_path: str, before_path: Path 
     destination.write_bytes(unified_diff(relative_path, before_path, after_path))
 
 
-def write_directory_diff(destination: Path, artifacts: list[dict]) -> None:
+def write_directory_diff(destination: Path, artifacts: list[dict], path_key: str = "path") -> None:
     """Write one concatenated unified diff for all changed text files in a directory mapping."""
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_bytes(
         b"".join(
-            unified_diff(artifact["path"], artifact["before_path"], artifact["after_path"])
+            unified_diff(artifact[path_key], artifact["before_path"], artifact["after_path"])
             for artifact in artifacts
         )
     )
 
 
-def artifact_record(change: str, before_artifact: object | None, after_artifact: object | None, before_mime: str | None, after_mime: str | None, upstream: dict, diff: Path, output: Path) -> dict:
+def artifact_record(candidate: dict, output: Path) -> dict:
+    """Record an artifact once with links to every emitted representation."""
+    before_artifact = candidate["before_artifact"]
+    after_artifact = candidate["after_artifact"]
     artifact = after_artifact or before_artifact
     assert artifact is not None
     return {
         "path": artifact.relative_path,
-        "change": change,
-        "before": None if before_artifact is None else {"md5": before_artifact.md5, "size": before_artifact.size, "mime_type": before_mime},
-        "after": None if after_artifact is None else {"md5": after_artifact.md5, "size": after_artifact.size, "mime_type": after_mime},
-        "upstream": upstream,
-        "diff": str(diff.relative_to(output)),
+        "change": candidate["change"],
+        "before": None if before_artifact is None else {"md5": before_artifact.md5, "size": before_artifact.size, "mime_type": candidate["before_mime"]},
+        "after": None if after_artifact is None else {"md5": after_artifact.md5, "size": after_artifact.size, "mime_type": candidate["after_mime"]},
+        "upstream": candidate["upstream"],
+        "binary_package_diff": candidate["binary_package_diff"],
+        "binary_only_diff": candidate.get("binary_only_diff"),
+        "upstream_diff": candidate.get("upstream_diff"),
+        "upstream_path": candidate.get("upstream_path"),
     }
 
 
@@ -392,9 +440,13 @@ def create_release_text_diffs(
     report = []
     total_changed = 0
     total_text_artifacts = 0
-    total_diff_files = 0
+    total_binary_package_diffs = 0
+    total_binary_only_diffs = 0
+    total_upstream_diffs = 0
     total_excluded_by_filters = 0
-    generated_diff_sequences: dict[str, int] = {}
+    binary_package_sequences: dict[str, int] = {}
+    binary_only_sequences: dict[str, int] = {}
+    upstream_sequences: dict[str, int] = {}
     for before, after in comparisons:
         inspection, _ = INSPECTOR.compare(before, after, results / "deb-package-inspections", catalogue)
         before_payload = inspection / "before" / "payload"
@@ -415,6 +467,7 @@ def create_release_text_diffs(
             text, before_mime, after_mime = artifact_is_text(before_path, after_path)
             if not text:
                 continue
+            root_source_mapping = root_source_mapping_for_artifact(configured_mappings, after.name, relative_path)
             text_candidates.append(
                 {
                     "change": change,
@@ -426,6 +479,12 @@ def create_release_text_diffs(
                     "after_path": after_path,
                     "path": relative_path,
                     "upstream": upstream_for_artifact(configured_mappings, after.name, relative_path),
+                    "root_source_mapping": root_source_mapping,
+                    "upstream_path": (
+                        upstream_path_for_artifact(root_source_mapping, relative_path)
+                        if root_source_mapping is not None
+                        else None
+                    ),
                 }
             )
 
@@ -463,52 +522,83 @@ def create_release_text_diffs(
                 individual_candidates.extend(candidates)
                 del directory_candidates[group]
         for candidate in individual_candidates:
-            diff = output / "diffs" / generated_diff_filename(candidate["upstream"], after_release, generated_diff_sequences)
-            write_unified_diff(diff, candidate["path"], candidate["before_path"], candidate["after_path"])
-            artifacts.append(
-                artifact_record(
-                    candidate["change"],
-                    candidate["before_artifact"],
-                    candidate["after_artifact"],
-                    candidate["before_mime"],
-                    candidate["after_mime"],
-                    candidate["upstream"],
-                    diff,
-                    output,
-                )
+            diff = output / "binary_packages_diffs" / generated_diff_filename(
+                candidate["upstream"], after_release, binary_package_sequences
             )
-            total_diff_files += 1
+            write_unified_diff(diff, candidate["path"], candidate["before_path"], candidate["after_path"])
+            candidate["binary_package_diff"] = str(diff.relative_to(output))
+            total_binary_package_diffs += 1
         for (repository, github_repository, selection, grouping, directory), candidates in sorted(directory_candidates.items()):
             upstream = {
                 "github_repository": github_repository,
                 "repository": repository,
                 "selection": selection,
             }
-            diff = output / "diffs" / generated_diff_filename(upstream, after_release, generated_diff_sequences)
+            diff = output / "binary_packages_diffs" / generated_diff_filename(
+                upstream, after_release, binary_package_sequences
+            )
             write_directory_diff(diff, candidates)
             diff_groups.append(
                 {
                     "upstream": upstream,
                     "grouping": grouping,
                     "directory": directory,
-                    "diff": str(diff.relative_to(output)),
+                    "binary_package_diff": str(diff.relative_to(output)),
                     "artifacts": [candidate["path"] for candidate in candidates],
                 }
             )
             for candidate in candidates:
-                artifacts.append(
-                    artifact_record(
-                        candidate["change"],
-                        candidate["before_artifact"],
-                        candidate["after_artifact"],
-                        candidate["before_mime"],
-                        candidate["after_mime"],
-                        candidate["upstream"],
-                        diff,
-                        output,
-                    )
-                )
-            total_diff_files += 1
+                candidate["binary_package_diff"] = str(diff.relative_to(output))
+            total_binary_package_diffs += 1
+
+        upstream_groups: dict[tuple[str, str, str, str], list[dict]] = {}
+        binary_only_candidates = []
+        for candidate in text_candidates:
+            mapping = candidate["root_source_mapping"]
+            if mapping is None:
+                binary_only_candidates.append(candidate)
+                continue
+            upstream_groups.setdefault(
+                (
+                    mapping["github_repository"],
+                    mapping["repository"],
+                    mapping["artifact_root"],
+                    mapping["source_root"],
+                ),
+                [],
+            ).append(candidate)
+        upstream_diff_groups = []
+        for (github_repository, repository, artifact_root, source_root), candidates in sorted(upstream_groups.items()):
+            upstream = {
+                "github_repository": github_repository,
+                "repository": repository,
+                "selection": "artifact-root/source-root",
+            }
+            diff = output / "upstream_diffs" / generated_diff_filename(upstream, after_release, upstream_sequences)
+            write_directory_diff(diff, candidates, "upstream_path")
+            relative_diff = str(diff.relative_to(output))
+            upstream_diff_groups.append(
+                {
+                    "upstream": upstream,
+                    "artifact_root": artifact_root,
+                    "source_root": source_root,
+                    "upstream_diff": relative_diff,
+                    "artifacts": [candidate["path"] for candidate in candidates],
+                    "upstream_paths": [candidate["upstream_path"] for candidate in candidates],
+                }
+            )
+            for candidate in candidates:
+                candidate["upstream_diff"] = relative_diff
+            total_upstream_diffs += 1
+        for candidate in binary_only_candidates:
+            diff = output / "binary_only_diffs" / generated_diff_filename(
+                candidate["upstream"], after_release, binary_only_sequences
+            )
+            write_unified_diff(diff, candidate["path"], candidate["before_path"], candidate["after_path"])
+            candidate["binary_only_diff"] = str(diff.relative_to(output))
+            total_binary_only_diffs += 1
+
+        artifacts = [artifact_record(candidate, output) for candidate in text_candidates]
         total_text_artifacts += len(text_candidates)
         report.append(
             {
@@ -520,6 +610,7 @@ def create_release_text_diffs(
                 "excluded_by_source_extractor_filters": excluded_by_filters,
                 "text_artifacts": artifacts,
                 "directory_diff_groups": diff_groups,
+                "upstream_diff_groups": upstream_diff_groups,
             }
         )
 
@@ -539,7 +630,9 @@ def create_release_text_diffs(
                 "comparisons": len(report),
                 "changed_regular_artifacts": total_changed,
                 "text_artifacts": total_text_artifacts,
-                "text_diffs": total_diff_files,
+                "binary_package_diffs": total_binary_package_diffs,
+                "binary_only_diffs": total_binary_only_diffs,
+                "upstream_diffs": total_upstream_diffs,
                 "excluded_by_source_extractor_filters": total_excluded_by_filters,
                 "skipped_packages": skipped,
                 "boundary": "Only regular package payload files are considered. A file is textual when file(1) identifies every available side as text/* or a recognised textual application MIME type. Packages are downloaded and extracted but never installed.",

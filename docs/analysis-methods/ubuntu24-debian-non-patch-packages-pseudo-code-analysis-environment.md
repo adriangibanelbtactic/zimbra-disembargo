@@ -236,26 +236,40 @@ var/ubuntu24-debian-non-patch-packages-pseudo-code-analysis/results/
   release-text-diffs/10.1.21/
 ```
 
-Its `diffs/` directory contains every unified `.diff` directly, including added
-and removed files. Source extractor mappings that define an `artifact-root`
-combine every changed text artifact below that directory into one diff; paths
-without such a mapping are combined when two or more changed text artifacts
-share the same direct payload directory. An unmapped directory with only one
-changed text artifact retains one diff per file. Each filename encodes the
-mapped upstream GitHub repository, target release, and a zero-padded sequence,
-for example `zm-web-client-10.1.21-generated-changes_001.diff`. Exact package
-builds, installed paths, grouping, and the upstream-mapping basis remain in
-`text-artifacts.json`; they are deliberately not encoded in the filename.
-An exact artifact mapping takes precedence over an `artifact-root`; otherwise,
-the package's mapped repository with the most artifact mappings is used. An
-artifact from a package with no source-extractor mapping is retained as
-`unmapped-<package>-<release>-generated-changes_<number>.diff`, with that status
-recorded in `text-artifacts.json` rather than guessing an upstream repository.
-`text-artifacts.json` indexes every generated diff, MIME type, hash, size, and
-change kind, including the directory groups and their grouping rule;
-`manifest.json` records the exact release selection, totals, and packages
-skipped because the requested before release was not retained. An existing
-output folder is never overwritten; a later run receives a numeric suffix.
+`binary_packages_diffs/` contains every unified package-payload `.diff`,
+including added and removed files. Source extractor mappings that define an
+`artifact-root` combine every changed text artifact below that directory into
+one diff; paths without such a mapping are combined when two or more changed
+text artifacts share the same direct payload directory. An unmapped directory
+with only one changed text artifact retains one diff per file.
+
+`upstream_diffs/` contains only mappings with both `artifact-root` and
+`source-root`. For each file below such a root, the diff labels are rewritten
+deterministically from the installed path to the corresponding upstream path.
+For example, an installed `opt/zimbra/bin/zmlicensectl` mapping to `src/bin`
+has `before/src/bin/zmlicensectl` and `after/src/bin/zmlicensectl` labels. This
+is the patch-ready representation for that upstream repository.
+
+`binary_only_diffs/` contains one raw installed-path diff for every text
+artifact that has no applicable `artifact-root`/`source-root` mapping. This
+includes direct artifact and artifact-root-only extractor mappings, along with
+unmapped package artifacts; those mappings do not establish a deterministic
+installed-path to source-path rewrite.
+
+Each filename encodes the mapped upstream GitHub repository, target release,
+and a zero-padded sequence, for example
+`zm-web-client-10.1.21-generated-changes_001.diff`. Exact package builds,
+installed paths, grouping, source-root substitutions, and the upstream-mapping
+basis remain in `text-artifacts.json`; they are deliberately not encoded in the
+filename. An exact artifact mapping takes precedence over an `artifact-root`
+for package grouping; otherwise, the package's mapped repository with the most
+artifact mappings is used. An artifact from a package with no source-extractor
+mapping is retained as `unmapped-<package>-<release>-generated-changes_<number>.diff`,
+with that status recorded in `text-artifacts.json` rather than guessing an
+upstream repository. `manifest.json` records the exact release selection,
+per-category diff totals, and packages skipped because the requested before
+release was not retained. An existing output folder is never overwritten; a
+later run receives a numeric suffix.
 
 Text classification uses `file(1)`: all available sides must be recognised as
 `text/*` or a recognised textual application format (JavaScript, JSON, XML, or

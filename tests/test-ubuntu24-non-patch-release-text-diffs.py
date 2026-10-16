@@ -129,7 +129,7 @@ with tempfile.TemporaryDirectory() as temporary_directory:
             {
                 "upstream": {"github_repository": "Example/example"},
                 "filter-negative": [".java"],
-                "mappings": [{"package": "zimbra-example", "artifact-root": "opt/zimbra"}],
+                "mappings": [{"package": "zimbra-example", "artifact-root": "opt/zimbra", "source-root": "src/zimbra"}],
             }
         ),
         encoding="utf-8",
@@ -137,6 +137,11 @@ with tempfile.TemporaryDirectory() as temporary_directory:
     assert module.artifact_roots(definitions) == {"zimbra-example": ["opt/zimbra"]}
     assert module.shared_negative_filters(definitions) == [".java"]
     assert module.artifact_root_for_path(module.artifact_roots(definitions), "zimbra-example", "opt/zimbra/changed.txt") == "opt/zimbra"
+    root_source = module.root_source_mapping_for_artifact(
+        module.source_extractor_mappings(definitions), "zimbra-example", "opt/zimbra/changed.txt"
+    )
+    assert root_source is not None
+    assert module.upstream_path_for_artifact(root_source, "opt/zimbra/changed.txt") == "src/zimbra/changed.txt"
     assert module.upstream_for_artifact(module.source_extractor_mappings(definitions), "zimbra-example", "usr/share/unmapped.txt") == {
         "github_repository": "Example/example",
         "repository": "example",
@@ -156,7 +161,9 @@ with tempfile.TemporaryDirectory() as temporary_directory:
     assert output.name == "10.1.21"
     assert manifest["comparisons"] == 2
     assert manifest["text_artifacts"] == 12
-    assert manifest["text_diffs"] == 6
+    assert manifest["binary_package_diffs"] == 6
+    assert manifest["binary_only_diffs"] == 6
+    assert manifest["upstream_diffs"] == 2
     assert manifest["excluded_by_source_extractor_filters"] == 2
     assert manifest["skipped_packages"] == skipped
     assert all(len(item["text_artifacts"]) == 6 for item in report["comparisons"])
@@ -172,18 +179,31 @@ with tempfile.TemporaryDirectory() as temporary_directory:
     }
     assert not list(output.rglob("*.bin.diff"))
     assert "generated.java" not in json.dumps(report)
-    diffs = list((output / "diffs").glob("*.diff"))
+    diffs = list((output / "binary_packages_diffs").glob("*.diff"))
     assert len(diffs) == 6
-    assert all(diff.parent == output / "diffs" for diff in diffs)
+    assert all(diff.parent == output / "binary_packages_diffs" for diff in diffs)
     assert {diff.name for diff in diffs} == {
         f"example-10.1.21-generated-changes_{number:03d}.diff"
         for number in range(1, 7)
     }
     groups_by_kind = {group["grouping"]: group for group in groups}
-    grouped = output / groups_by_kind["parent-directory"]["diff"]
+    grouped = output / groups_by_kind["parent-directory"]["binary_package_diff"]
     assert "--- before/usr/share/second.txt" in grouped.read_text(encoding="utf-8")
     assert "+++ after/usr/share/unmapped.txt" in grouped.read_text(encoding="utf-8")
-    source_grouped = output / groups_by_kind["source-extractor-artifact-root"]["diff"]
+    source_grouped = output / groups_by_kind["source-extractor-artifact-root"]["binary_package_diff"]
     assert "--- before/opt/zimbra/changed.txt" in source_grouped.read_text(encoding="utf-8")
     assert "+++ after/opt/zimbra/added.json" in source_grouped.read_text(encoding="utf-8")
+    upstream_group = report["comparisons"][0]["upstream_diff_groups"][0]
+    assert upstream_group["artifact_root"] == "opt/zimbra"
+    assert upstream_group["source_root"] == "src/zimbra"
+    upstream_diff = output / upstream_group["upstream_diff"]
+    assert "--- before/src/zimbra/changed.txt" in upstream_diff.read_text(encoding="utf-8")
+    assert "+++ after/src/zimbra/added.json" in upstream_diff.read_text(encoding="utf-8")
+    artifacts_by_path = {item["path"]: item for item in report["comparisons"][0]["text_artifacts"]}
+    assert artifacts_by_path["opt/zimbra/changed.txt"]["upstream_path"] == "src/zimbra/changed.txt"
+    assert artifacts_by_path["opt/zimbra/changed.txt"]["upstream_diff"] is not None
+    assert artifacts_by_path["opt/zimbra/changed.txt"]["binary_only_diff"] is None
+    assert artifacts_by_path["etc/individual.txt"]["upstream_diff"] is None
+    assert artifacts_by_path["etc/individual.txt"]["binary_only_diff"] is not None
+    assert len(list((output / "binary_only_diffs").glob("*.diff"))) == 6
     assert all(item["upstream"]["github_repository"] == "Example/example" for item in report["comparisons"][0]["text_artifacts"])
