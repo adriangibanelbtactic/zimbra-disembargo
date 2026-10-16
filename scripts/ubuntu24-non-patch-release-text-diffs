@@ -2,7 +2,6 @@
 """Write text-only payload diffs for all retained non-patch package builds in a release pair."""
 import argparse
 import fnmatch
-import hashlib
 import importlib.machinery
 import importlib.util
 import json
@@ -11,7 +10,6 @@ import subprocess
 import sys
 from pathlib import Path, PurePosixPath
 from types import ModuleType
-from urllib.parse import quote
 
 
 class ReleaseTextDiffError(Exception):
@@ -169,30 +167,53 @@ def unique_directory(path: Path) -> Path:
     return candidate
 
 
-def artifact_roots(definitions: Path) -> dict[str, list[str]]:
-    """Read package artifact-directory mappings from source extractor definitions."""
+def source_extractor_mappings(definitions: Path) -> dict[str, list[dict]]:
+    """Read package-to-upstream mappings from source extractor definitions."""
     if not definitions.is_dir():
         raise ReleaseTextDiffError(f"Source extractor definitions directory does not exist: {definitions}")
-    roots: dict[str, set[str]] = {}
+    package_mappings: dict[str, list[dict]] = {}
     for definition_path in sorted(definitions.glob("*.json")):
         try:
             definition = json.loads(definition_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as error:
             raise ReleaseTextDiffError(f"Could not read source extractor definition {definition_path}: {error}") from error
+        upstream = definition.get("upstream")
+        github_repository = upstream.get("github_repository") if isinstance(upstream, dict) else None
+        if not isinstance(github_repository, str) or github_repository.count("/") != 1:
+            raise ReleaseTextDiffError(f"Source extractor definition {definition_path} has an invalid upstream GitHub repository")
+        repository = github_repository.rsplit("/", 1)[1]
         mappings = definition.get("mappings")
         if not isinstance(mappings, list):
-            continue
+            raise ReleaseTextDiffError(f"Source extractor definition {definition_path} has an invalid mappings list")
         for mapping in mappings:
             if not isinstance(mapping, dict):
-                continue
+                raise ReleaseTextDiffError(f"Source extractor definition {definition_path} has an invalid mapping")
             package = mapping.get("package")
+            artifact = mapping.get("artifact")
             root = mapping.get("artifact-root")
-            if isinstance(package, str) and isinstance(root, str) and root.strip("/"):
-                roots.setdefault(package, set()).add(root.strip("/"))
-    return {
-        package: sorted(package_roots, key=lambda root: (-len(root), root))
-        for package, package_roots in roots.items()
-    }
+            if not isinstance(package, str) or not package or (artifact is not None and not isinstance(artifact, str)) or (root is not None and not isinstance(root, str)):
+                raise ReleaseTextDiffError(f"Source extractor definition {definition_path} has an invalid package artifact mapping")
+            if artifact is None and (root is None or not root.strip("/")):
+                raise ReleaseTextDiffError(f"Source extractor definition {definition_path} mapping has no artifact or artifact-root")
+            package_mappings.setdefault(package, []).append(
+                {
+                    "github_repository": github_repository,
+                    "repository": repository,
+                    "artifact": artifact.strip("/") if isinstance(artifact, str) else None,
+                    "artifact_root": root.strip("/") if isinstance(root, str) else None,
+                }
+            )
+    return package_mappings
+
+
+def artifact_roots(definitions: Path) -> dict[str, list[str]]:
+    """Return configured artifact roots, retained for directory-diff grouping."""
+    roots: dict[str, set[str]] = {}
+    for package, mappings in source_extractor_mappings(definitions).items():
+        for mapping in mappings:
+            if mapping["artifact_root"]:
+                roots.setdefault(package, set()).add(mapping["artifact_root"])
+    return {package: sorted(package_roots, key=lambda root: (-len(root), root)) for package, package_roots in roots.items()}
 
 
 def shared_negative_filters(definitions: Path) -> list[str]:
@@ -231,19 +252,56 @@ def artifact_root_for_path(roots: dict[str, list[str]], package: str, path: str)
     return next((root for root in roots.get(package, []) if path == root or path.startswith(root + "/")), None)
 
 
-def diff_filename(before: object, after: object, relative_path: str) -> str:
-    """Create one collision-resistant, single-directory filename for a diff."""
-    encoded_path = quote(relative_path, safe=".-_")
-    stem = "__".join(
-        (INSPECTOR.safe_name(after.name), INSPECTOR.safe_name(before.version), "to", INSPECTOR.safe_name(after.version), encoded_path)
-    )
-    filename = f"{stem}.diff"
-    if len(filename.encode("utf-8")) <= 255:
-        return filename
-    identity = f"{after.name}\0{before.version}\0{after.version}\0{relative_path}".encode("utf-8")
-    return "__".join(
-        (INSPECTOR.safe_name(after.name), INSPECTOR.safe_name(before.version), "to", INSPECTOR.safe_name(after.version), hashlib.sha256(identity).hexdigest())
-    ) + ".diff"
+def upstream_for_artifact(mappings: dict[str, list[dict]], package: str, path: str) -> dict:
+    """Associate an installed artifact with the most specific known upstream repo.
+
+    Exact artifact mappings take precedence, followed by the longest matching
+    artifact root.  A package with multiple component extractors otherwise uses
+    the repository with the most mappings; this makes its primary component the
+    stable default while preserving the mapping basis in the report.
+    """
+    candidates = mappings.get(package, [])
+    exact = [mapping for mapping in candidates if mapping["artifact"] == path]
+    roots = [
+        mapping
+        for mapping in candidates
+        if mapping["artifact_root"] and (path == mapping["artifact_root"] or path.startswith(mapping["artifact_root"] + "/"))
+    ]
+    selected = exact
+    selection = "exact-artifact"
+    if not selected and roots:
+        longest = max(len(mapping["artifact_root"]) for mapping in roots)
+        selected = [mapping for mapping in roots if len(mapping["artifact_root"]) == longest]
+        selection = "artifact-root"
+    if not selected and candidates:
+        frequencies: dict[str, int] = {}
+        for mapping in candidates:
+            frequencies[mapping["github_repository"]] = frequencies.get(mapping["github_repository"], 0) + 1
+        primary = min(frequencies, key=lambda repository: (-frequencies[repository], repository))
+        selected = [mapping for mapping in candidates if mapping["github_repository"] == primary]
+        selection = "package-primary"
+    if not selected:
+        return {
+            "github_repository": None,
+            "repository": f"unmapped-{package}",
+            "selection": "no-source-extractor-mapping",
+        }
+    repositories = {mapping["github_repository"] for mapping in selected}
+    if len(repositories) != 1:
+        raise ReleaseTextDiffError(f"Ambiguous upstream mapping for {package}:{path}: {', '.join(sorted(repositories))}")
+    mapping = selected[0]
+    return {
+        "github_repository": mapping["github_repository"],
+        "repository": mapping["repository"],
+        "selection": selection,
+    }
+
+
+def generated_diff_filename(upstream: dict, after_release: str, sequences: dict[str, int]) -> str:
+    """Return the next stable generated-change filename for one upstream repo."""
+    key = upstream["github_repository"] or upstream["repository"]
+    sequences[key] = sequences.get(key, 0) + 1
+    return f"{INSPECTOR.safe_name(upstream['repository'])}-{after_release}-generated-changes_{sequences[key]:03d}.diff"
 
 
 def unified_diff(relative_path: str, before_path: Path | None, after_path: Path | None) -> bytes:
@@ -285,7 +343,7 @@ def write_directory_diff(destination: Path, artifacts: list[dict]) -> None:
     )
 
 
-def artifact_record(change: str, before_artifact: object | None, after_artifact: object | None, before_mime: str | None, after_mime: str | None, diff: Path, output: Path) -> dict:
+def artifact_record(change: str, before_artifact: object | None, after_artifact: object | None, before_mime: str | None, after_mime: str | None, upstream: dict, diff: Path, output: Path) -> dict:
     artifact = after_artifact or before_artifact
     assert artifact is not None
     return {
@@ -293,6 +351,7 @@ def artifact_record(change: str, before_artifact: object | None, after_artifact:
         "change": change,
         "before": None if before_artifact is None else {"md5": before_artifact.md5, "size": before_artifact.size, "mime_type": before_mime},
         "after": None if after_artifact is None else {"md5": after_artifact.md5, "size": after_artifact.size, "mime_type": after_mime},
+        "upstream": upstream,
         "diff": str(diff.relative_to(output)),
     }
 
@@ -310,7 +369,14 @@ def create_release_text_diffs(
     catalogue = results / "zimbra-non-patch-debian-package-catalogue.json"
     packages = INSPECTOR.write_catalogue(catalogue)
     definitions_path = definitions or ROOT.parent / "source-extractors"
-    configured_roots = artifact_roots(definitions_path)
+    configured_mappings = source_extractor_mappings(definitions_path)
+    configured_roots = {
+        package: sorted(
+            {mapping["artifact_root"] for mapping in mappings if mapping["artifact_root"]},
+            key=lambda root: (-len(root), root),
+        )
+        for package, mappings in configured_mappings.items()
+    }
     global_negative_filters = shared_negative_filters(definitions_path)
     before_release, after_release = selected_releases(packages, before_or_after, after_release)
     if before_release == after_release:
@@ -328,6 +394,7 @@ def create_release_text_diffs(
     total_text_artifacts = 0
     total_diff_files = 0
     total_excluded_by_filters = 0
+    generated_diff_sequences: dict[str, int] = {}
     for before, after in comparisons:
         inspection, _ = INSPECTOR.compare(before, after, results / "deb-package-inspections", catalogue)
         before_payload = inspection / "before" / "payload"
@@ -358,26 +425,45 @@ def create_release_text_diffs(
                     "before_path": before_path,
                     "after_path": after_path,
                     "path": relative_path,
+                    "upstream": upstream_for_artifact(configured_mappings, after.name, relative_path),
                 }
             )
 
         artifacts = []
         diff_groups = []
-        directory_candidates: dict[tuple[str, str], list[dict]] = {}
+        directory_candidates: dict[tuple[str, str | None, str, str, str], list[dict]] = {}
         individual_candidates = []
         for candidate in text_candidates:
             root = artifact_root_for_path(configured_roots, after.name, candidate["path"])
             if root is not None:
-                directory_candidates.setdefault(("source-extractor-artifact-root", root), []).append(candidate)
+                directory_candidates.setdefault(
+                    (
+                        candidate["upstream"]["repository"],
+                        candidate["upstream"]["github_repository"],
+                        candidate["upstream"]["selection"],
+                        "source-extractor-artifact-root",
+                        root,
+                    ),
+                    [],
+                ).append(candidate)
                 continue
             parent = PurePosixPath(candidate["path"]).parent.as_posix()
-            directory_candidates.setdefault(("parent-directory", parent), []).append(candidate)
+            directory_candidates.setdefault(
+                (
+                    candidate["upstream"]["repository"],
+                    candidate["upstream"]["github_repository"],
+                    candidate["upstream"]["selection"],
+                    "parent-directory",
+                    parent,
+                ),
+                [],
+            ).append(candidate)
         for group, candidates in list(directory_candidates.items()):
-            if group[0] == "parent-directory" and len(candidates) == 1:
+            if group[3] == "parent-directory" and len(candidates) == 1:
                 individual_candidates.extend(candidates)
                 del directory_candidates[group]
         for candidate in individual_candidates:
-            diff = output / "diffs" / diff_filename(before, after, candidate["path"])
+            diff = output / "diffs" / generated_diff_filename(candidate["upstream"], after_release, generated_diff_sequences)
             write_unified_diff(diff, candidate["path"], candidate["before_path"], candidate["after_path"])
             artifacts.append(
                 artifact_record(
@@ -386,16 +472,23 @@ def create_release_text_diffs(
                     candidate["after_artifact"],
                     candidate["before_mime"],
                     candidate["after_mime"],
+                    candidate["upstream"],
                     diff,
                     output,
                 )
             )
             total_diff_files += 1
-        for (grouping, directory), candidates in sorted(directory_candidates.items()):
-            diff = output / "diffs" / diff_filename(before, after, f"{grouping}/{directory}")
+        for (repository, github_repository, selection, grouping, directory), candidates in sorted(directory_candidates.items()):
+            upstream = {
+                "github_repository": github_repository,
+                "repository": repository,
+                "selection": selection,
+            }
+            diff = output / "diffs" / generated_diff_filename(upstream, after_release, generated_diff_sequences)
             write_directory_diff(diff, candidates)
             diff_groups.append(
                 {
+                    "upstream": upstream,
                     "grouping": grouping,
                     "directory": directory,
                     "diff": str(diff.relative_to(output)),
@@ -410,6 +503,7 @@ def create_release_text_diffs(
                         candidate["after_artifact"],
                         candidate["before_mime"],
                         candidate["after_mime"],
+                        candidate["upstream"],
                         diff,
                         output,
                     )

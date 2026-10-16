@@ -44,6 +44,28 @@ assert module.selected_releases(catalogue, "10.1.20", "10.1.21") == ("10.1.20", 
 assert module.is_text_mime("text/plain")
 assert module.is_text_mime("application/javascript")
 assert not module.is_text_mime("application/octet-stream")
+project_mappings = module.source_extractor_mappings(ROOT / "source-extractors")
+assert module.upstream_for_artifact(
+    project_mappings,
+    "zimbra-mbox-webclient-war",
+    "opt/zimbra/jetty_base/webapps/zimbra/js/zimbraMail/mail/model/ZmMailMsg.js",
+) == {
+    "github_repository": "Zimbra/zm-web-client",
+    "repository": "zm-web-client",
+    "selection": "package-primary",
+}
+assert module.upstream_for_artifact(
+    project_mappings,
+    "zimbra-mbox-webclient-war",
+    "opt/zimbra/jetty_base/webapps/zimbra/js/Ajax_all.js",
+) == {
+    "github_repository": "Zimbra/zm-ajax",
+    "repository": "zm-ajax",
+    "selection": "exact-artifact",
+}
+sequences = {}
+assert module.generated_diff_filename({"github_repository": "Zimbra/zm-web-client", "repository": "zm-web-client"}, "10.1.21", sequences) == "zm-web-client-10.1.21-generated-changes_001.diff"
+assert module.generated_diff_filename({"github_repository": "Zimbra/zm-web-client", "repository": "zm-web-client"}, "10.1.21", sequences) == "zm-web-client-10.1.21-generated-changes_002.diff"
 
 
 with tempfile.TemporaryDirectory() as temporary_directory:
@@ -103,12 +125,23 @@ with tempfile.TemporaryDirectory() as temporary_directory:
     definitions = temporary / "definitions"
     definitions.mkdir()
     (definitions / "example.json").write_text(
-        json.dumps({"filter-negative": [".java"], "mappings": [{"package": "zimbra-example", "artifact-root": "opt/zimbra"}]}),
+        json.dumps(
+            {
+                "upstream": {"github_repository": "Example/example"},
+                "filter-negative": [".java"],
+                "mappings": [{"package": "zimbra-example", "artifact-root": "opt/zimbra"}],
+            }
+        ),
         encoding="utf-8",
     )
     assert module.artifact_roots(definitions) == {"zimbra-example": ["opt/zimbra"]}
     assert module.shared_negative_filters(definitions) == [".java"]
     assert module.artifact_root_for_path(module.artifact_roots(definitions), "zimbra-example", "opt/zimbra/changed.txt") == "opt/zimbra"
+    assert module.upstream_for_artifact(module.source_extractor_mappings(definitions), "zimbra-example", "usr/share/unmapped.txt") == {
+        "github_repository": "Example/example",
+        "repository": "example",
+        "selection": "package-primary",
+    }
 
     module.INSPECTOR.write_catalogue = fake_catalogue
     module.INSPECTOR.compare = fake_compare
@@ -133,19 +166,24 @@ with tempfile.TemporaryDirectory() as temporary_directory:
         "usr/share/second.txt", "usr/share/unmapped.txt",
     }
     groups = report["comparisons"][0]["directory_diff_groups"]
-    assert [(group["grouping"], group["directory"], group["artifacts"]) for group in groups] == [
-        ("parent-directory", "usr/share", ["usr/share/second.txt", "usr/share/unmapped.txt"]),
-        ("source-extractor-artifact-root", "opt/zimbra", ["opt/zimbra/added.json", "opt/zimbra/changed.txt", "opt/zimbra/removed.conf"]),
-    ]
+    assert {(group["grouping"], group["directory"], tuple(group["artifacts"])) for group in groups} == {
+        ("parent-directory", "usr/share", ("usr/share/second.txt", "usr/share/unmapped.txt")),
+        ("source-extractor-artifact-root", "opt/zimbra", ("opt/zimbra/added.json", "opt/zimbra/changed.txt", "opt/zimbra/removed.conf")),
+    }
     assert not list(output.rglob("*.bin.diff"))
     assert "generated.java" not in json.dumps(report)
     diffs = list((output / "diffs").glob("*.diff"))
     assert len(diffs) == 6
     assert all(diff.parent == output / "diffs" for diff in diffs)
-    grouped = output / groups[0]["diff"]
+    assert {diff.name for diff in diffs} == {
+        f"example-10.1.21-generated-changes_{number:03d}.diff"
+        for number in range(1, 7)
+    }
+    groups_by_kind = {group["grouping"]: group for group in groups}
+    grouped = output / groups_by_kind["parent-directory"]["diff"]
     assert "--- before/usr/share/second.txt" in grouped.read_text(encoding="utf-8")
     assert "+++ after/usr/share/unmapped.txt" in grouped.read_text(encoding="utf-8")
-    source_grouped = output / groups[1]["diff"]
+    source_grouped = output / groups_by_kind["source-extractor-artifact-root"]["diff"]
     assert "--- before/opt/zimbra/changed.txt" in source_grouped.read_text(encoding="utf-8")
     assert "+++ after/opt/zimbra/added.json" in source_grouped.read_text(encoding="utf-8")
-    assert any("etc%2Findividual.txt.diff" in diff.name for diff in diffs)
+    assert all(item["upstream"]["github_repository"] == "Example/example" for item in report["comparisons"][0]["text_artifacts"])

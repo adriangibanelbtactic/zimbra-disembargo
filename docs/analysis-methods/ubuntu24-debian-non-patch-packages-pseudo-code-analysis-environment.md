@@ -242,7 +242,15 @@ combine every changed text artifact below that directory into one diff; paths
 without such a mapping are combined when two or more changed text artifacts
 share the same direct payload directory. An unmapped directory with only one
 changed text artifact retains one diff per file. Each filename encodes the
-package, exact before/after builds, and installed path or grouped directory.
+mapped upstream GitHub repository, target release, and a zero-padded sequence,
+for example `zm-web-client-10.1.21-generated-changes_001.diff`. Exact package
+builds, installed paths, grouping, and the upstream-mapping basis remain in
+`text-artifacts.json`; they are deliberately not encoded in the filename.
+An exact artifact mapping takes precedence over an `artifact-root`; otherwise,
+the package's mapped repository with the most artifact mappings is used. An
+artifact from a package with no source-extractor mapping is retained as
+`unmapped-<package>-<release>-generated-changes_<number>.diff`, with that status
+recorded in `text-artifacts.json` rather than guessing an upstream repository.
 `text-artifacts.json` indexes every generated diff, MIME type, hash, size, and
 change kind, including the directory groups and their grouping rule;
 `manifest.json` records the exact release selection, totals, and packages
