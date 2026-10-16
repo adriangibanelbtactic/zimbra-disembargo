@@ -49,7 +49,8 @@ The command automatically:
 
 1. rebuilds the local non-patch package catalogue from the current APT metadata;
 2. selects every catalogued build of the extractor's package whose Debian
-   version begins with the after release label;
+   version begins with the after release label followed by a build separator
+   (`.` or `-`);
 3. compares every such build to the newest retained build of the requested
    before release (or its nearest retained predecessor), and also records an
    immediate-predecessor comparison when that is a different build;

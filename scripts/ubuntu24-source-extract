@@ -3,6 +3,7 @@
 import argparse
 import importlib.machinery
 import importlib.util
+import re
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -26,7 +27,8 @@ INSPECTOR = load_script("ubuntu24_deb_non_patch_package_inspect", ROOT / "ubuntu
 
 def packages_for_release(packages: dict, package_name: str, release: str) -> list:
     """Return every catalogued Debian build for an X.Y.Z release label."""
-    candidates = [package for package in packages.get(package_name, []) if package.version.startswith(f"{release}.")]
+    version_prefix = re.compile(rf"^{re.escape(release)}(?:[.-]|$)")
+    candidates = [package for package in packages.get(package_name, []) if version_prefix.match(package.version)]
     if not candidates:
         raise MANUAL.ExtractionError(
             f"No catalogued {package_name} build begins with release {release}; run start to refresh APT metadata"
