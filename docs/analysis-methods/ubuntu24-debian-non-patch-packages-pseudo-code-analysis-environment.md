@@ -255,6 +255,12 @@ PHP). This is an artifact filter, not proof that a file is source code or that a
 change is security relevant. Packages are downloaded and extracted only; they
 are never installed.
 
+Before text classification, the report also applies every `filter-negative`
+pattern shared by all source extractor definitions. In particular, the
+definition-level compulsory `.java` rule excludes every payload path ending in
+`.java`, including generated Java files outside an extractor's mapped artifact
+root. The report manifest records the shared filters and exclusion count.
+
 ## Deterministic source extractors
 
 A source extractor correlates an existing package inspection with explicitly

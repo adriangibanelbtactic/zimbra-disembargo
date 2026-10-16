@@ -90,6 +90,8 @@ with tempfile.TemporaryDirectory() as temporary_directory:
         (after_unmapped / "unmapped.txt").write_text("after\n", encoding="utf-8")
         (before_unmapped / "second.txt").write_text("before\n", encoding="utf-8")
         (after_unmapped / "second.txt").write_text("after\n", encoding="utf-8")
+        (before_unmapped / "generated.java").write_text("class Before {}\n", encoding="utf-8")
+        (after_unmapped / "generated.java").write_text("class After {}\n", encoding="utf-8")
         before_individual = inspection / "before" / "payload" / "etc"
         after_individual = inspection / "after" / "payload" / "etc"
         before_individual.mkdir(parents=True)
@@ -101,10 +103,11 @@ with tempfile.TemporaryDirectory() as temporary_directory:
     definitions = temporary / "definitions"
     definitions.mkdir()
     (definitions / "example.json").write_text(
-        json.dumps({"mappings": [{"package": "zimbra-example", "artifact-root": "opt/zimbra"}]}),
+        json.dumps({"filter-negative": [".java"], "mappings": [{"package": "zimbra-example", "artifact-root": "opt/zimbra"}]}),
         encoding="utf-8",
     )
     assert module.artifact_roots(definitions) == {"zimbra-example": ["opt/zimbra"]}
+    assert module.shared_negative_filters(definitions) == [".java"]
     assert module.artifact_root_for_path(module.artifact_roots(definitions), "zimbra-example", "opt/zimbra/changed.txt") == "opt/zimbra"
 
     module.INSPECTOR.write_catalogue = fake_catalogue
@@ -121,6 +124,7 @@ with tempfile.TemporaryDirectory() as temporary_directory:
     assert manifest["comparisons"] == 2
     assert manifest["text_artifacts"] == 12
     assert manifest["text_diffs"] == 6
+    assert manifest["excluded_by_source_extractor_filters"] == 2
     assert manifest["skipped_packages"] == skipped
     assert all(len(item["text_artifacts"]) == 6 for item in report["comparisons"])
     paths = {item["path"] for item in report["comparisons"][0]["text_artifacts"]}
@@ -134,6 +138,7 @@ with tempfile.TemporaryDirectory() as temporary_directory:
         ("source-extractor-artifact-root", "opt/zimbra", ["opt/zimbra/added.json", "opt/zimbra/changed.txt", "opt/zimbra/removed.conf"]),
     ]
     assert not list(output.rglob("*.bin.diff"))
+    assert "generated.java" not in json.dumps(report)
     diffs = list((output / "diffs").glob("*.diff"))
     assert len(diffs) == 6
     assert all(diff.parent == output / "diffs" for diff in diffs)

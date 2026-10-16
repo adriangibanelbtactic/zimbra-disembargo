@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Write text-only payload diffs for all retained non-patch package builds in a release pair."""
 import argparse
+import fnmatch
 import hashlib
 import importlib.machinery
 import importlib.util
@@ -194,6 +195,37 @@ def artifact_roots(definitions: Path) -> dict[str, list[str]]:
     }
 
 
+def shared_negative_filters(definitions: Path) -> list[str]:
+    """Return filters declared by every source extractor definition.
+
+    A filter common to every definition is a repository-wide rule rather than a
+    component-specific source scope.  Applying it here keeps release text-diff
+    output aligned with the extractor rules without hard-coding suffixes.
+    """
+    if not definitions.is_dir():
+        raise ReleaseTextDiffError(f"Source extractor definitions directory does not exist: {definitions}")
+    filters = []
+    for definition_path in sorted(definitions.glob("*.json")):
+        try:
+            definition = json.loads(definition_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise ReleaseTextDiffError(f"Could not read source extractor definition {definition_path}: {error}") from error
+        negative = definition.get("filter-negative")
+        if not isinstance(negative, list) or not all(isinstance(item, str) and item for item in negative):
+            raise ReleaseTextDiffError(f"Source extractor definition {definition_path} has an invalid filter-negative list")
+        filters.append(set(negative))
+    if not filters:
+        raise ReleaseTextDiffError(f"No source extractor definitions found in {definitions}")
+    return sorted(set.intersection(*filters))
+
+
+def path_matches_filter(path: str, pattern: str) -> bool:
+    """Match source-extractor suffix filters and filename glob filters."""
+    if any(character in pattern for character in "*?["):
+        return fnmatch.fnmatchcase(PurePosixPath(path).name, pattern)
+    return path.endswith(pattern)
+
+
 def artifact_root_for_path(roots: dict[str, list[str]], package: str, path: str) -> str | None:
     """Return the most-specific configured artifact directory containing PATH."""
     return next((root for root in roots.get(package, []) if path == root or path.startswith(root + "/")), None)
@@ -277,7 +309,9 @@ def create_release_text_diffs(
 
     catalogue = results / "zimbra-non-patch-debian-package-catalogue.json"
     packages = INSPECTOR.write_catalogue(catalogue)
-    configured_roots = artifact_roots(definitions or ROOT.parent / "source-extractors")
+    definitions_path = definitions or ROOT.parent / "source-extractors"
+    configured_roots = artifact_roots(definitions_path)
+    global_negative_filters = shared_negative_filters(definitions_path)
     before_release, after_release = selected_releases(packages, before_or_after, after_release)
     if before_release == after_release:
         raise ReleaseTextDiffError("Before and after releases must differ")
@@ -293,6 +327,7 @@ def create_release_text_diffs(
     total_changed = 0
     total_text_artifacts = 0
     total_diff_files = 0
+    total_excluded_by_filters = 0
     for before, after in comparisons:
         inspection, _ = INSPECTOR.compare(before, after, results / "deb-package-inspections", catalogue)
         before_payload = inspection / "before" / "payload"
@@ -300,9 +335,14 @@ def create_release_text_diffs(
         before_artifacts = INSPECTOR.inventory_package_artifacts(before_payload)
         after_artifacts = INSPECTOR.inventory_package_artifacts(after_payload)
         text_candidates = []
+        excluded_by_filters = 0
         for change, before_artifact, after_artifact in changed_artifacts(before_artifacts, after_artifacts):
             total_changed += 1
             relative_path = (after_artifact or before_artifact).relative_path
+            if any(path_matches_filter(relative_path, pattern) for pattern in global_negative_filters):
+                excluded_by_filters += 1
+                total_excluded_by_filters += 1
+                continue
             before_path = before_payload / relative_path if before_artifact is not None else None
             after_path = after_payload / relative_path if after_artifact is not None else None
             text, before_mime, after_mime = artifact_is_text(before_path, after_path)
@@ -383,6 +423,7 @@ def create_release_text_diffs(
                 "after_version": after.version,
                 "inspection": str(inspection.relative_to(results)),
                 "changed_regular_artifacts": len(changed_artifacts(before_artifacts, after_artifacts)),
+                "excluded_by_source_extractor_filters": excluded_by_filters,
                 "text_artifacts": artifacts,
                 "directory_diff_groups": diff_groups,
             }
@@ -398,12 +439,14 @@ def create_release_text_diffs(
                 "method": "ubuntu24-debian-non-patch-release-text-diffs",
                 "requested_releases": {"before": before_release, "after": after_release},
                 "catalogue": str(catalogue),
-                "source_extractor_definitions": str(definitions or ROOT.parent / "source-extractors"),
+                "source_extractor_definitions": str(definitions_path),
+                "source_extractor_global_negative_filters": global_negative_filters,
                 "text_artifact_report": "text-artifacts.json",
                 "comparisons": len(report),
                 "changed_regular_artifacts": total_changed,
                 "text_artifacts": total_text_artifacts,
                 "text_diffs": total_diff_files,
+                "excluded_by_source_extractor_filters": total_excluded_by_filters,
                 "skipped_packages": skipped,
                 "boundary": "Only regular package payload files are considered. A file is textual when file(1) identifies every available side as text/* or a recognised textual application MIME type. Packages are downloaded and extracted but never installed.",
             },
