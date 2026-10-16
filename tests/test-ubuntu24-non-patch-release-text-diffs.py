@@ -82,12 +82,27 @@ with tempfile.TemporaryDirectory() as temporary_directory:
         (after_payload / "added.json").write_text('{"added": true}\n', encoding="utf-8")
         (before_payload / "binary.bin").write_bytes(b"before\x00")
         (after_payload / "binary.bin").write_bytes(b"after\x00")
+        before_unmapped = inspection / "before" / "payload" / "usr" / "share"
+        after_unmapped = inspection / "after" / "payload" / "usr" / "share"
+        before_unmapped.mkdir(parents=True)
+        after_unmapped.mkdir(parents=True)
+        (before_unmapped / "unmapped.txt").write_text("before\n", encoding="utf-8")
+        (after_unmapped / "unmapped.txt").write_text("after\n", encoding="utf-8")
         return inspection, []
+
+    definitions = temporary / "definitions"
+    definitions.mkdir()
+    (definitions / "example.json").write_text(
+        json.dumps({"mappings": [{"package": "zimbra-example", "artifact-root": "opt/zimbra"}]}),
+        encoding="utf-8",
+    )
+    assert module.artifact_roots(definitions) == {"zimbra-example": ["opt/zimbra"]}
+    assert module.artifact_root_for_path(module.artifact_roots(definitions), "zimbra-example", "opt/zimbra/changed.txt") == "opt/zimbra"
 
     module.INSPECTOR.write_catalogue = fake_catalogue
     module.INSPECTOR.compare = fake_compare
     try:
-        output = module.create_release_text_diffs("10.1.21", None, temporary / "results")
+        output = module.create_release_text_diffs("10.1.21", None, temporary / "results", definitions=definitions)
     finally:
         module.INSPECTOR.write_catalogue = original_catalogue
         module.INSPECTOR.compare = original_compare
@@ -96,13 +111,23 @@ with tempfile.TemporaryDirectory() as temporary_directory:
     report = json.loads((output / "text-artifacts.json").read_text(encoding="utf-8"))
     assert output.name == "10.1.21"
     assert manifest["comparisons"] == 2
-    assert manifest["text_diffs"] == 6
+    assert manifest["text_artifacts"] == 8
+    assert manifest["text_diffs"] == 4
     assert manifest["skipped_packages"] == skipped
-    assert all(len(item["text_artifacts"]) == 3 for item in report["comparisons"])
+    assert all(len(item["text_artifacts"]) == 4 for item in report["comparisons"])
     paths = {item["path"] for item in report["comparisons"][0]["text_artifacts"]}
-    assert paths == {"opt/zimbra/added.json", "opt/zimbra/changed.txt", "opt/zimbra/removed.conf"}
+    assert paths == {"opt/zimbra/added.json", "opt/zimbra/changed.txt", "opt/zimbra/removed.conf", "usr/share/unmapped.txt"}
+    groups = report["comparisons"][0]["directory_diff_groups"]
+    assert groups == [{
+        "artifact_root": "opt/zimbra",
+        "diff": groups[0]["diff"],
+        "artifacts": ["opt/zimbra/added.json", "opt/zimbra/changed.txt", "opt/zimbra/removed.conf"],
+    }]
     assert not list(output.rglob("*.bin.diff"))
     diffs = list((output / "diffs").glob("*.diff"))
-    assert len(diffs) == 6
+    assert len(diffs) == 4
     assert all(diff.parent == output / "diffs" for diff in diffs)
-    assert any("zimbra-example__10.1.20.1-1.u24__to__10.1.21.1-1.u24__opt%2Fzimbra%2Fchanged.txt.diff" == diff.name for diff in diffs)
+    grouped = output / groups[0]["diff"]
+    assert "--- before/opt/zimbra/changed.txt" in grouped.read_text(encoding="utf-8")
+    assert "+++ after/opt/zimbra/added.json" in grouped.read_text(encoding="utf-8")
+    assert any("usr%2Fshare%2Funmapped.txt.diff" in diff.name for diff in diffs)

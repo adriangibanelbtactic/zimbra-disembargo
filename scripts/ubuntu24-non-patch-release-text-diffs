@@ -168,6 +168,37 @@ def unique_directory(path: Path) -> Path:
     return candidate
 
 
+def artifact_roots(definitions: Path) -> dict[str, list[str]]:
+    """Read package artifact-directory mappings from source extractor definitions."""
+    if not definitions.is_dir():
+        raise ReleaseTextDiffError(f"Source extractor definitions directory does not exist: {definitions}")
+    roots: dict[str, set[str]] = {}
+    for definition_path in sorted(definitions.glob("*.json")):
+        try:
+            definition = json.loads(definition_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise ReleaseTextDiffError(f"Could not read source extractor definition {definition_path}: {error}") from error
+        mappings = definition.get("mappings")
+        if not isinstance(mappings, list):
+            continue
+        for mapping in mappings:
+            if not isinstance(mapping, dict):
+                continue
+            package = mapping.get("package")
+            root = mapping.get("artifact-root")
+            if isinstance(package, str) and isinstance(root, str) and root.strip("/"):
+                roots.setdefault(package, set()).add(root.strip("/"))
+    return {
+        package: sorted(package_roots, key=lambda root: (-len(root), root))
+        for package, package_roots in roots.items()
+    }
+
+
+def artifact_root_for_path(roots: dict[str, list[str]], package: str, path: str) -> str | None:
+    """Return the most-specific configured artifact directory containing PATH."""
+    return next((root for root in roots.get(package, []) if path == root or path.startswith(root + "/")), None)
+
+
 def diff_filename(before: object, after: object, relative_path: str) -> str:
     """Create one collision-resistant, single-directory filename for a diff."""
     encoded_path = quote(relative_path, safe=".-_")
@@ -183,8 +214,8 @@ def diff_filename(before: object, after: object, relative_path: str) -> str:
     ) + ".diff"
 
 
-def write_unified_diff(destination: Path, relative_path: str, before_path: Path | None, after_path: Path | None) -> None:
-    """Write a readable unified diff, using /dev/null for added or removed text."""
+def unified_diff(relative_path: str, before_path: Path | None, after_path: Path | None) -> bytes:
+    """Return a readable unified diff, using /dev/null for added or removed text."""
     command = [
         "diff",
         "--unified=3",
@@ -198,12 +229,28 @@ def write_unified_diff(destination: Path, relative_path: str, before_path: Path 
     try:
         completed = subprocess.run(command, capture_output=True)
     except OSError as error:
-        raise ReleaseTextDiffError(f"Could not write diff for {relative_path}: {error}") from error
+        raise ReleaseTextDiffError(f"Could not create diff for {relative_path}: {error}") from error
     if completed.returncode not in (0, 1):
         detail = completed.stderr.decode("utf-8", errors="replace").strip()
-        raise ReleaseTextDiffError(f"Could not write diff for {relative_path}: {detail}")
+        raise ReleaseTextDiffError(f"Could not create diff for {relative_path}: {detail}")
+    return completed.stdout
+
+
+def write_unified_diff(destination: Path, relative_path: str, before_path: Path | None, after_path: Path | None) -> None:
+    """Write one unified diff to DESTINATION."""
     destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_bytes(completed.stdout)
+    destination.write_bytes(unified_diff(relative_path, before_path, after_path))
+
+
+def write_directory_diff(destination: Path, artifacts: list[dict]) -> None:
+    """Write one concatenated unified diff for all changed text files in a directory mapping."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(
+        b"".join(
+            unified_diff(artifact["path"], artifact["before_path"], artifact["after_path"])
+            for artifact in artifacts
+        )
+    )
 
 
 def artifact_record(change: str, before_artifact: object | None, after_artifact: object | None, before_mime: str | None, after_mime: str | None, diff: Path, output: Path) -> dict:
@@ -219,13 +266,18 @@ def artifact_record(change: str, before_artifact: object | None, after_artifact:
 
 
 def create_release_text_diffs(
-    before_or_after: str, after_release: str | None, results: Path, output_root: Path | None = None
+    before_or_after: str,
+    after_release: str | None,
+    results: Path,
+    output_root: Path | None = None,
+    definitions: Path | None = None,
 ) -> Path:
     if not RELEASE_VERSION.fullmatch(before_or_after) or (after_release is not None and not RELEASE_VERSION.fullmatch(after_release)):
         raise ReleaseTextDiffError("Release labels must use numeric X.Y.Z form")
 
     catalogue = results / "zimbra-non-patch-debian-package-catalogue.json"
     packages = INSPECTOR.write_catalogue(catalogue)
+    configured_roots = artifact_roots(definitions or ROOT.parent / "source-extractors")
     before_release, after_release = selected_releases(packages, before_or_after, after_release)
     if before_release == after_release:
         raise ReleaseTextDiffError("Before and after releases must differ")
@@ -239,14 +291,15 @@ def create_release_text_diffs(
     output = unique_directory(root / INSPECTOR.safe_name(after_release))
     report = []
     total_changed = 0
-    total_text = 0
+    total_text_artifacts = 0
+    total_diff_files = 0
     for before, after in comparisons:
         inspection, _ = INSPECTOR.compare(before, after, results / "deb-package-inspections", catalogue)
         before_payload = inspection / "before" / "payload"
         after_payload = inspection / "after" / "payload"
         before_artifacts = INSPECTOR.inventory_package_artifacts(before_payload)
         after_artifacts = INSPECTOR.inventory_package_artifacts(after_payload)
-        artifacts = []
+        text_candidates = []
         for change, before_artifact, after_artifact in changed_artifacts(before_artifacts, after_artifacts):
             total_changed += 1
             relative_path = (after_artifact or before_artifact).relative_path
@@ -255,16 +308,68 @@ def create_release_text_diffs(
             text, before_mime, after_mime = artifact_is_text(before_path, after_path)
             if not text:
                 continue
-            diff = (
-                output
-                / "diffs"
-                / diff_filename(before, after, relative_path)
+            text_candidates.append(
+                {
+                    "change": change,
+                    "before_artifact": before_artifact,
+                    "after_artifact": after_artifact,
+                    "before_mime": before_mime,
+                    "after_mime": after_mime,
+                    "before_path": before_path,
+                    "after_path": after_path,
+                    "path": relative_path,
+                }
             )
-            write_unified_diff(diff, relative_path, before_path, after_path)
+
+        artifacts = []
+        diff_groups = []
+        directory_candidates: dict[str, list[dict]] = {}
+        individual_candidates = []
+        for candidate in text_candidates:
+            root = artifact_root_for_path(configured_roots, after.name, candidate["path"])
+            if root is None:
+                individual_candidates.append(candidate)
+            else:
+                directory_candidates.setdefault(root, []).append(candidate)
+        for candidate in individual_candidates:
+            diff = output / "diffs" / diff_filename(before, after, candidate["path"])
+            write_unified_diff(diff, candidate["path"], candidate["before_path"], candidate["after_path"])
             artifacts.append(
-                artifact_record(change, before_artifact, after_artifact, before_mime, after_mime, diff, output)
+                artifact_record(
+                    candidate["change"],
+                    candidate["before_artifact"],
+                    candidate["after_artifact"],
+                    candidate["before_mime"],
+                    candidate["after_mime"],
+                    diff,
+                    output,
+                )
             )
-            total_text += 1
+            total_diff_files += 1
+        for root, candidates in sorted(directory_candidates.items()):
+            diff = output / "diffs" / diff_filename(before, after, f"directory/{root}")
+            write_directory_diff(diff, candidates)
+            diff_groups.append(
+                {
+                    "artifact_root": root,
+                    "diff": str(diff.relative_to(output)),
+                    "artifacts": [candidate["path"] for candidate in candidates],
+                }
+            )
+            for candidate in candidates:
+                artifacts.append(
+                    artifact_record(
+                        candidate["change"],
+                        candidate["before_artifact"],
+                        candidate["after_artifact"],
+                        candidate["before_mime"],
+                        candidate["after_mime"],
+                        diff,
+                        output,
+                    )
+                )
+            total_diff_files += 1
+        total_text_artifacts += len(text_candidates)
         report.append(
             {
                 "package": after.name,
@@ -273,6 +378,7 @@ def create_release_text_diffs(
                 "inspection": str(inspection.relative_to(results)),
                 "changed_regular_artifacts": len(changed_artifacts(before_artifacts, after_artifacts)),
                 "text_artifacts": artifacts,
+                "directory_diff_groups": diff_groups,
             }
         )
 
@@ -286,10 +392,12 @@ def create_release_text_diffs(
                 "method": "ubuntu24-debian-non-patch-release-text-diffs",
                 "requested_releases": {"before": before_release, "after": after_release},
                 "catalogue": str(catalogue),
+                "source_extractor_definitions": str(definitions or ROOT.parent / "source-extractors"),
                 "text_artifact_report": "text-artifacts.json",
                 "comparisons": len(report),
                 "changed_regular_artifacts": total_changed,
-                "text_diffs": total_text,
+                "text_artifacts": total_text_artifacts,
+                "text_diffs": total_diff_files,
                 "skipped_packages": skipped,
                 "boundary": "Only regular package payload files are considered. A file is textual when file(1) identifies every available side as text/* or a recognised textual application MIME type. Packages are downloaded and extracted but never installed.",
             },
@@ -307,10 +415,15 @@ def main() -> int:
     parser.add_argument("after", nargs="?", help="optional target release, for example 10.1.21")
     parser.add_argument("--results-directory", type=Path, default=Path("/results"))
     parser.add_argument("--output-directory", type=Path, help="parent directory for the release-named diff folder")
+    parser.add_argument("--definitions-directory", type=Path, default=ROOT.parent / "source-extractors")
     arguments = parser.parse_args()
     try:
         output = create_release_text_diffs(
-            arguments.before_or_after, arguments.after, arguments.results_directory, arguments.output_directory
+            arguments.before_or_after,
+            arguments.after,
+            arguments.results_directory,
+            arguments.output_directory,
+            arguments.definitions_directory,
         )
     except (ReleaseTextDiffError, INSPECTOR.AnalysisError) as error:
         print(f"error: {error}", file=sys.stderr)

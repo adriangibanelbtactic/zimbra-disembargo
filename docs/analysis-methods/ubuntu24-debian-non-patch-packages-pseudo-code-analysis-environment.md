@@ -237,12 +237,15 @@ var/ubuntu24-debian-non-patch-packages-pseudo-code-analysis/results/
 ```
 
 Its `diffs/` directory contains every unified `.diff` directly, including added
-and removed files. Each filename encodes the package, exact before/after builds,
-and installed path. `text-artifacts.json` indexes every generated diff, MIME
-type, hash, size, and change kind; `manifest.json` records the exact release
-selection, totals, and packages skipped because the requested before release was
-not retained. An existing output folder is never overwritten; a later run
-receives a numeric suffix.
+and removed files. Source extractor mappings that define an `artifact-root`
+combine every changed text artifact below that directory into one diff; paths
+without such a mapping retain one diff per file. Each filename encodes the
+package, exact before/after builds, and installed path or configured directory.
+`text-artifacts.json` indexes every generated diff, MIME type, hash, size, and
+change kind, including the directory groups; `manifest.json` records the exact
+release selection, totals, and packages skipped because the requested before
+release was not retained. An existing output folder is never overwritten; a
+later run receives a numeric suffix.
 
 Text classification uses `file(1)`: all available sides must be recognised as
 `text/*` or a recognised textual application format (JavaScript, JSON, XML, or
