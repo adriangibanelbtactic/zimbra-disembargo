@@ -13,7 +13,11 @@
     "opt/zimbra/jetty_base/webapps/zimbra/public/login.jsp",
     "opt/zimbra/jetty_base/webapps/zimbra/js/Mail_all.js",
     "opt/zimbra/jetty_base/webapps/zimbra/js/zimbraMail/mail/view/ZmInviteMsgView.js",
-    "opt/zimbra/conf/templates/mail/Message.template"
+    "opt/zimbra/conf/templates/mail/Message.template",
+    "opt/zimbra/jetty_base/webapps/zimbra/WEB-INF/tags/rest/restDocument.tag",
+    "opt/zimbra/jetty_base/webapps/zimbra/WEB-INF/tags/rest/restDocumentPreview.tag",
+    "opt/zimbra/jetty_base/webapps/zimbra/WEB-INF/tags/rest/restDocumentView.tag",
+    "opt/zimbra/jetty_base/webapps/zimbra/public/Resources.jsp"
   ],
   "filter-positive": [
     ".jsp",
@@ -33,13 +37,8 @@
   "mappings": [
     {
       "package": "zimbra-mbox-webclient-war",
-      "artifact": "opt/zimbra/jetty_base/webapps/zimbra/WEB-INF/tags/rest/restHead.tag",
-      "source-roots": [
-        "WebRoot/WEB-INF/tags/rest"
-      ],
-      "source-suffixes": [
-        ".tag"
-      ]
+      "artifact-root": "opt/zimbra/jetty_base/webapps/zimbra/WEB-INF/tags/rest",
+      "source-root": "WebRoot/WEB-INF/tags/rest"
     },
     {
       "package": "zimbra-mbox-webclient-war",
@@ -113,6 +112,16 @@
       ],
       "source-suffixes": [
         ".template"
+      ]
+    },
+    {
+      "package": "zimbra-mbox-webclient-war",
+      "artifact": "opt/zimbra/jetty_base/webapps/zimbra/public/Resources.jsp",
+      "source-roots": [
+        "WebRoot/public/Resources.jsp"
+      ],
+      "source-suffixes": [
+        ".jsp"
       ]
     }
   ]
