@@ -261,19 +261,21 @@ artifacts with a derivation, direct artifacts without source roots,
 artifact-root-only mappings, and unmapped package artifacts.
 
 Each filename encodes the mapped upstream GitHub repository, target release,
-and a zero-padded sequence, for example
-`zm-web-client-10.1.21-generated-changes_001.diff`. Exact package builds,
+representation, and a zero-padded sequence. For example,
+`binary_only_diffs/zm-web-client-10.1.21-orphan-changes_001.diff` and
+`upstream_diffs/zm-web-client-10.1.21-upstream-changes_001.diff` cannot share a
+basename even when they describe the same component. Exact package builds,
 installed paths, grouping, source-root substitutions, and the upstream-mapping
 basis remain in `text-artifacts.json`; they are deliberately not encoded in the
 filename. An exact artifact mapping takes precedence over an `artifact-root`
 for package grouping; otherwise, the package's mapped repository with the most
 artifact mappings is used. An artifact from a package with no source-extractor
-mapping is retained as `unmapped-<package>-<release>-generated-changes_<number>.diff`,
-with that status recorded in `text-artifacts.json` rather than guessing an
-upstream repository. `manifest.json` records the exact release selection,
-per-category diff totals, and packages skipped because the requested before
-release was not retained. An existing output folder is never overwritten; a
-later run receives a numeric suffix.
+mapping is retained with its `unmapped-<package>` repository label, with that
+status recorded in `text-artifacts.json` rather than guessing an upstream
+repository. `manifest.json` records the exact release selection, per-category
+diff totals, and packages skipped because the requested before release was not
+retained. An existing output folder is never overwritten; a later run receives
+a numeric suffix.
 
 Text classification uses `file(1)`: all available sides must be recognised as
 `text/*` or a recognised textual application format (JavaScript, JSON, XML, or

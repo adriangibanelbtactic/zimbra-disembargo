@@ -78,6 +78,7 @@ assert module.direct_source_mapping_for_artifact(
 sequences = {}
 assert module.generated_diff_filename({"github_repository": "Zimbra/zm-web-client", "repository": "zm-web-client"}, "10.1.21", sequences) == "zm-web-client-10.1.21-generated-changes_001.diff"
 assert module.generated_diff_filename({"github_repository": "Zimbra/zm-web-client", "repository": "zm-web-client"}, "10.1.21", sequences) == "zm-web-client-10.1.21-generated-changes_002.diff"
+assert module.generated_diff_filename({"github_repository": "Zimbra/zm-web-client", "repository": "zm-web-client"}, "10.1.21", sequences, "orphan-changes") == "zm-web-client-10.1.21-orphan-changes_003.diff"
 
 
 with tempfile.TemporaryDirectory() as temporary_directory:
@@ -249,4 +250,6 @@ with tempfile.TemporaryDirectory() as temporary_directory:
     assert artifacts_by_path["etc/individual.txt"]["upstream_diff"] is not None
     assert artifacts_by_path["etc/individual.txt"]["binary_only_diff"] is None
     assert len(list((output / "binary_only_diffs").glob("*.diff"))) == 4
+    assert all("-orphan-changes_" in diff.name for diff in (output / "binary_only_diffs").glob("*.diff"))
+    assert all("-upstream-changes_" in diff.name for diff in (output / "upstream_diffs").glob("*.diff"))
     assert all(item["upstream"]["github_repository"] == "Example/example" for item in report["comparisons"][0]["text_artifacts"])
