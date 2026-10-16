@@ -88,6 +88,14 @@ with tempfile.TemporaryDirectory() as temporary_directory:
         after_unmapped.mkdir(parents=True)
         (before_unmapped / "unmapped.txt").write_text("before\n", encoding="utf-8")
         (after_unmapped / "unmapped.txt").write_text("after\n", encoding="utf-8")
+        (before_unmapped / "second.txt").write_text("before\n", encoding="utf-8")
+        (after_unmapped / "second.txt").write_text("after\n", encoding="utf-8")
+        before_individual = inspection / "before" / "payload" / "etc"
+        after_individual = inspection / "after" / "payload" / "etc"
+        before_individual.mkdir(parents=True)
+        after_individual.mkdir(parents=True)
+        (before_individual / "individual.txt").write_text("before\n", encoding="utf-8")
+        (after_individual / "individual.txt").write_text("after\n", encoding="utf-8")
         return inspection, []
 
     definitions = temporary / "definitions"
@@ -111,23 +119,28 @@ with tempfile.TemporaryDirectory() as temporary_directory:
     report = json.loads((output / "text-artifacts.json").read_text(encoding="utf-8"))
     assert output.name == "10.1.21"
     assert manifest["comparisons"] == 2
-    assert manifest["text_artifacts"] == 8
-    assert manifest["text_diffs"] == 4
+    assert manifest["text_artifacts"] == 12
+    assert manifest["text_diffs"] == 6
     assert manifest["skipped_packages"] == skipped
-    assert all(len(item["text_artifacts"]) == 4 for item in report["comparisons"])
+    assert all(len(item["text_artifacts"]) == 6 for item in report["comparisons"])
     paths = {item["path"] for item in report["comparisons"][0]["text_artifacts"]}
-    assert paths == {"opt/zimbra/added.json", "opt/zimbra/changed.txt", "opt/zimbra/removed.conf", "usr/share/unmapped.txt"}
+    assert paths == {
+        "etc/individual.txt", "opt/zimbra/added.json", "opt/zimbra/changed.txt", "opt/zimbra/removed.conf",
+        "usr/share/second.txt", "usr/share/unmapped.txt",
+    }
     groups = report["comparisons"][0]["directory_diff_groups"]
-    assert groups == [{
-        "artifact_root": "opt/zimbra",
-        "diff": groups[0]["diff"],
-        "artifacts": ["opt/zimbra/added.json", "opt/zimbra/changed.txt", "opt/zimbra/removed.conf"],
-    }]
+    assert [(group["grouping"], group["directory"], group["artifacts"]) for group in groups] == [
+        ("parent-directory", "usr/share", ["usr/share/second.txt", "usr/share/unmapped.txt"]),
+        ("source-extractor-artifact-root", "opt/zimbra", ["opt/zimbra/added.json", "opt/zimbra/changed.txt", "opt/zimbra/removed.conf"]),
+    ]
     assert not list(output.rglob("*.bin.diff"))
     diffs = list((output / "diffs").glob("*.diff"))
-    assert len(diffs) == 4
+    assert len(diffs) == 6
     assert all(diff.parent == output / "diffs" for diff in diffs)
     grouped = output / groups[0]["diff"]
-    assert "--- before/opt/zimbra/changed.txt" in grouped.read_text(encoding="utf-8")
-    assert "+++ after/opt/zimbra/added.json" in grouped.read_text(encoding="utf-8")
-    assert any("usr%2Fshare%2Funmapped.txt.diff" in diff.name for diff in diffs)
+    assert "--- before/usr/share/second.txt" in grouped.read_text(encoding="utf-8")
+    assert "+++ after/usr/share/unmapped.txt" in grouped.read_text(encoding="utf-8")
+    source_grouped = output / groups[1]["diff"]
+    assert "--- before/opt/zimbra/changed.txt" in source_grouped.read_text(encoding="utf-8")
+    assert "+++ after/opt/zimbra/added.json" in source_grouped.read_text(encoding="utf-8")
+    assert any("etc%2Findividual.txt.diff" in diff.name for diff in diffs)

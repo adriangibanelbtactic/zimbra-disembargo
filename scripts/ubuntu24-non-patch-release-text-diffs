@@ -8,7 +8,7 @@ import json
 import re
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import ModuleType
 from urllib.parse import quote
 
@@ -323,14 +323,19 @@ def create_release_text_diffs(
 
         artifacts = []
         diff_groups = []
-        directory_candidates: dict[str, list[dict]] = {}
+        directory_candidates: dict[tuple[str, str], list[dict]] = {}
         individual_candidates = []
         for candidate in text_candidates:
             root = artifact_root_for_path(configured_roots, after.name, candidate["path"])
-            if root is None:
-                individual_candidates.append(candidate)
-            else:
-                directory_candidates.setdefault(root, []).append(candidate)
+            if root is not None:
+                directory_candidates.setdefault(("source-extractor-artifact-root", root), []).append(candidate)
+                continue
+            parent = PurePosixPath(candidate["path"]).parent.as_posix()
+            directory_candidates.setdefault(("parent-directory", parent), []).append(candidate)
+        for group, candidates in list(directory_candidates.items()):
+            if group[0] == "parent-directory" and len(candidates) == 1:
+                individual_candidates.extend(candidates)
+                del directory_candidates[group]
         for candidate in individual_candidates:
             diff = output / "diffs" / diff_filename(before, after, candidate["path"])
             write_unified_diff(diff, candidate["path"], candidate["before_path"], candidate["after_path"])
@@ -346,12 +351,13 @@ def create_release_text_diffs(
                 )
             )
             total_diff_files += 1
-        for root, candidates in sorted(directory_candidates.items()):
-            diff = output / "diffs" / diff_filename(before, after, f"directory/{root}")
+        for (grouping, directory), candidates in sorted(directory_candidates.items()):
+            diff = output / "diffs" / diff_filename(before, after, f"{grouping}/{directory}")
             write_directory_diff(diff, candidates)
             diff_groups.append(
                 {
-                    "artifact_root": root,
+                    "grouping": grouping,
+                    "directory": directory,
                     "diff": str(diff.relative_to(output)),
                     "artifacts": [candidate["path"] for candidate in candidates],
                 }
