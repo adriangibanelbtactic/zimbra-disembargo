@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Write text-only payload diffs for all retained non-patch package builds in a release pair."""
 import argparse
+import hashlib
 import importlib.machinery
 import importlib.util
 import json
@@ -9,6 +10,7 @@ import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType
+from urllib.parse import quote
 
 
 class ReleaseTextDiffError(Exception):
@@ -144,6 +146,21 @@ def unique_directory(path: Path) -> Path:
     return candidate
 
 
+def diff_filename(before: object, after: object, relative_path: str) -> str:
+    """Create one collision-resistant, single-directory filename for a diff."""
+    encoded_path = quote(relative_path, safe=".-_")
+    stem = "__".join(
+        (INSPECTOR.safe_name(after.name), INSPECTOR.safe_name(before.version), "to", INSPECTOR.safe_name(after.version), encoded_path)
+    )
+    filename = f"{stem}.diff"
+    if len(filename.encode("utf-8")) <= 255:
+        return filename
+    identity = f"{after.name}\0{before.version}\0{after.version}\0{relative_path}".encode("utf-8")
+    return "__".join(
+        (INSPECTOR.safe_name(after.name), INSPECTOR.safe_name(before.version), "to", INSPECTOR.safe_name(after.version), hashlib.sha256(identity).hexdigest())
+    ) + ".diff"
+
+
 def write_unified_diff(destination: Path, relative_path: str, before_path: Path | None, after_path: Path | None) -> None:
     """Write a readable unified diff, using /dev/null for added or removed text."""
     command = [
@@ -216,9 +233,7 @@ def create_release_text_diffs(before_release: str, after_release: str, results: 
             diff = (
                 output
                 / "diffs"
-                / INSPECTOR.safe_name(after.name)
-                / f"{INSPECTOR.safe_name(before.version)}__to__{INSPECTOR.safe_name(after.version)}"
-                / f"{relative_path}.diff"
+                / diff_filename(before, after, relative_path)
             )
             write_unified_diff(diff, relative_path, before_path, after_path)
             artifacts.append(

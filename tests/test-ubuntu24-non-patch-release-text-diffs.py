@@ -99,4 +99,7 @@ with tempfile.TemporaryDirectory() as temporary_directory:
     paths = {item["path"] for item in report["comparisons"][0]["text_artifacts"]}
     assert paths == {"opt/zimbra/added.json", "opt/zimbra/changed.txt", "opt/zimbra/removed.conf"}
     assert not list(output.rglob("*.bin.diff"))
-    assert len(list((output / "diffs").rglob("*.diff"))) == 6
+    diffs = list((output / "diffs").glob("*.diff"))
+    assert len(diffs) == 6
+    assert all(diff.parent == output / "diffs" for diff in diffs)
+    assert any("zimbra-example__10.1.20.1-1.u24__to__10.1.21.1-1.u24__opt%2Fzimbra%2Fchanged.txt.diff" == diff.name for diff in diffs)
