@@ -371,6 +371,7 @@ def extract(
     repository_cache: Path,
     before_tag: Optional[str] = None,
     comparison_role: str = "manual",
+    requested_before_release: Optional[str] = None,
 ) -> Path:
     definition = load_definition(definition_path)
     inspection = inspection.resolve()
@@ -396,10 +397,11 @@ def extract(
         if tag_key(before_tag) >= tag_key(target_release):
             raise ExtractionError(f"Baseline tag {before_tag} is not lower than target release {target_release}")
         before_commit = git_output(repository, "rev-parse", f"{before_tag}^{{commit}}")
+    release_before = requested_before_release or before_tag
     result = unique_result_directory(
         results_root,
         definition["name"],
-        before_tag,
+        release_before,
         target_release,
         package,
         before_package_version,
@@ -546,6 +548,10 @@ def extract(
             "baseline_commit": before_commit,
             "target_release": target_release,
             "target_tag_read": False,
+        },
+        "requested_releases": {
+            "before": release_before,
+            "after": target_release,
         },
         "inspection": {
             "directory": str(inspection),

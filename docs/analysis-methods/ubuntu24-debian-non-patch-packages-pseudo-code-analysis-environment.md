@@ -216,10 +216,14 @@ records that `Ajax_all.js` is an Ajx package bundle whose dependency manifest is
 
 For the normal workflow, provide the extractor and after release, or provide
 the extractor with explicit before and after releases. The command finds the
-nearest lower existing upstream tag when a before release is omitted, refreshes
-the package catalogue, downloads the newest matching build of the extractor's
-package for each release, runs the package inspection, and prints one
-upstream-ready `upstream.diff` path:
+nearest lower existing upstream tag when a before release is omitted. When an
+explicit before release has no matching component tag upstream, it seamlessly
+uses that nearest lower upstream tag only for source matching. It retains the
+requested before release for package selection and the result-directory
+umbrella, so a user can keep the release-review command unchanged. The command
+refreshes the package catalogue, downloads the newest matching build of the
+extractor's package for each release, runs the package inspection, and prints
+one upstream-ready `upstream.diff` path:
 
 ```sh
 scripts/ubuntu24-debian-non-patch-packages-pseudo-code-analysis source-extract \
@@ -236,6 +240,10 @@ do not exist in `Zimbra/zm-ajax`. Pass both tags, for example
 `source-extract zm-ajax 10.1.17 10.1.20`, to override automatic selection.
 For a release review, pass both labels so that the package comparison is the
 requested release pair rather than an automatically selected predecessor.
+For example, `source-extract zm-admin-console 10.1.3 10.1.4` uses upstream
+`10.1.2` if `10.1.3` is absent from that repository, but writes its results
+under `10.1.3__to__10.1.4` and records both the requested release labels and
+the selected upstream baseline in its manifest.
 
 The result contains:
 

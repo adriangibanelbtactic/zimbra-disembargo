@@ -41,6 +41,10 @@ assert [(before.version, after.version) for before, after in comparisons] == [
     ("10.1.17.1776247073-1.u24", "10.1.20.1783414027-1.u24"),
     ("10.1.20.1783414000-1.u24", "10.1.20.1783414027-1.u24"),
 ]
+fallback_comparisons = module.package_comparisons(catalogue, "zimbra-mta-components", "10.1.0", "10.1.2")
+assert [(before.version, after.version) for before, after in fallback_comparisons] == [
+    ("10.1.1-1zimbra8.8b1.18.04", "10.1.2-1zimbra8.8b1.18.04"),
+]
 try:
     module.package_for_release(catalogue, "zimbra-mbox-webclient-war", "10.1.18")
 except module.MANUAL.ExtractionError:
@@ -51,11 +55,15 @@ else:
 definition = {"upstream": {"url": "https://example.test/zm-ajax.git", "github_repository": "Example/zm-ajax"}}
 original_ensure = module.MANUAL.ensure_repository
 original_resolve = module.MANUAL.baseline_tag_for_release
+original_output = module.MANUAL.git_output
 try:
     module.MANUAL.ensure_repository = lambda url, destination: destination
     module.MANUAL.baseline_tag_for_release = lambda repository, after: ("10.1.17", "before")
-    assert module.selected_releases(definition, "10.1.20", None, Path("/cache")) == ("10.1.17", "10.1.20")
-    assert module.selected_releases(definition, "10.1.17", "10.1.20", Path("/cache")) == ("10.1.17", "10.1.20")
+    module.MANUAL.git_output = lambda repository, *arguments: "10.1.17\n"
+    assert module.selected_releases(definition, "10.1.20", None, Path("/cache")) == ("10.1.17", "10.1.17", "10.1.20")
+    assert module.selected_releases(definition, "10.1.17", "10.1.20", Path("/cache")) == ("10.1.17", "10.1.17", "10.1.20")
+    assert module.selected_releases(definition, "10.1.19", "10.1.20", Path("/cache")) == ("10.1.19", "10.1.17", "10.1.20")
 finally:
     module.MANUAL.ensure_repository = original_ensure
     module.MANUAL.baseline_tag_for_release = original_resolve
+    module.MANUAL.git_output = original_output

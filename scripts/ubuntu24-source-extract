@@ -78,14 +78,28 @@ def package_comparisons(packages: dict, package_name: str, before_release: str, 
     return comparisons
 
 
-def selected_releases(definition: dict, before_or_after: str, after_release: str | None, cache: Path) -> tuple[str, str]:
-    """Use explicit releases, or find the previous existing upstream tag."""
+def selected_releases(
+    definition: dict, before_or_after: str, after_release: str | None, cache: Path
+) -> tuple[str, str, str]:
+    """Return requested baseline, usable upstream baseline, and target release.
+
+    An explicit baseline is a package-release label.  If that component tag is
+    absent upstream, retain the requested label for package selection and result
+    grouping, but use the nearest lower public upstream tag for source matching.
+    """
     if after_release is not None:
-        return before_or_after, after_release
+        requested_before = before_or_after
+        upstream = definition["upstream"]
+        repository = MANUAL.ensure_repository(upstream["url"], cache / upstream["github_repository"].replace("/", "__"))
+        tags = MANUAL.git_output(repository, "tag", "--list").splitlines()
+        if requested_before in tags:
+            return requested_before, requested_before, after_release
+        upstream_before, _ = MANUAL.baseline_tag_for_release(repository, after_release)
+        return requested_before, upstream_before, after_release
     upstream = definition["upstream"]
     repository = MANUAL.ensure_repository(upstream["url"], cache / upstream["github_repository"].replace("/", "__"))
     before_release, _ = MANUAL.baseline_tag_for_release(repository, before_or_after)
-    return before_release, before_or_after
+    return before_release, before_release, before_or_after
 
 
 def extract(
@@ -98,7 +112,15 @@ def extract(
 ) -> list[Path]:
     definition_path = definitions / f"{extractor}.json"
     definition = MANUAL.load_definition(definition_path)
-    before_release, after_release = selected_releases(definition, before_or_after, after_release, cache)
+    requested_before_release, upstream_before_release, after_release = selected_releases(
+        definition, before_or_after, after_release, cache
+    )
+    if requested_before_release != upstream_before_release:
+        print(
+            f"info: upstream tag {requested_before_release} is unavailable for {extractor}; "
+            f"using {upstream_before_release} as the source baseline",
+            file=sys.stderr,
+        )
     package_names = {mapping["package"] for mapping in definition["mappings"]}
     if len(package_names) != 1:
         raise MANUAL.ExtractionError(
@@ -109,10 +131,10 @@ def extract(
     packages = INSPECTOR.write_catalogue(catalogue)
     extracted: list[Path] = []
     comparisons = package_comparisons(
-        packages, package_name, before_release, after_release
+        packages, package_name, requested_before_release, after_release
     )
     try:
-        baseline_version = package_for_release(packages, package_name, before_release).version
+        baseline_version = package_for_release(packages, package_name, requested_before_release).version
     except MANUAL.ExtractionError:
         baseline_version = package_predecessor(
             packages[package_name], packages_for_release(packages, package_name, after_release)[0]
@@ -133,8 +155,9 @@ def extract(
                 inspection,
                 results / "source-extractions",
                 cache,
-                before_tag=before_release,
+                before_tag=upstream_before_release,
                 comparison_role=role,
+                requested_before_release=requested_before_release,
             )
         )
     return extracted

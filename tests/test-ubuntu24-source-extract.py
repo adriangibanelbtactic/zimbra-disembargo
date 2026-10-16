@@ -125,7 +125,13 @@ with tempfile.TemporaryDirectory() as temporary_directory:
     )
 
     result = module.extract(
-        definition, "10.1.20", inspection, temporary / "results", temporary / "cache", before_tag="10.1.17"
+        definition,
+        "10.1.20",
+        inspection,
+        temporary / "results",
+        temporary / "cache",
+        before_tag="10.1.17",
+        requested_before_release="10.1.19",
     )
     manifest = json.loads((result / "manifest.json").read_text(encoding="utf-8"))
     matched = json.loads((result / "matched-artifact-hunks.json").read_text(encoding="utf-8"))
@@ -133,6 +139,8 @@ with tempfile.TemporaryDirectory() as temporary_directory:
     assert manifest["upstream_baseline"]["baseline"] == "10.1.17"
     assert manifest["upstream_baseline"]["target_release"] == "10.1.20"
     assert not manifest["upstream_baseline"]["target_tag_read"]
+    assert manifest["requested_releases"] == {"before": "10.1.19", "after": "10.1.20"}
+    assert "10.1.19__to__10.1.20" in result.as_posix()
     assert manifest["inspection"]["before_version"] == "10.1.17.1-1"
     assert manifest["inspection"]["after_version"] == "10.1.20.1-1"
     assert manifest["inspection"]["comparison_role"] == "manual"
