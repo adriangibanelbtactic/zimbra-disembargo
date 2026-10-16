@@ -200,16 +200,26 @@ inspect_source_manual() {
 }
 
 release_text_diffs() {
-    prepare_series
-    local root
-    root=$(series_results_root)
-    if [[ -t 0 && -t 1 ]]; then
-        docker exec --interactive --tty "${CONTAINER}" /project/scripts/ubuntu24-non-patch-release-text-diffs \
-            --results-directory "$root" "${arguments[@]}"
-    else
-        docker exec "${CONTAINER}" /project/scripts/ubuntu24-non-patch-release-text-diffs \
-            --results-directory "$root" "${arguments[@]}"
-    fi
+    # The analysis container has a fixed name and bind-mounts its invoking
+    # checkout.  Always replace it so this command cannot accidentally use a
+    # container left running by another checkout or worktree.
+    (
+        cleanup() {
+            docker rm --force "${CONTAINER}" >/dev/null 2>&1 || true
+        }
+        trap cleanup EXIT
+        cleanup
+        start
+        local root
+        root=$(series_results_root)
+        if [[ -t 0 && -t 1 ]]; then
+            docker exec --interactive --tty "${CONTAINER}" /project/scripts/ubuntu24-non-patch-release-text-diffs \
+                --results-directory "$root" "${arguments[@]}"
+        else
+            docker exec "${CONTAINER}" /project/scripts/ubuntu24-non-patch-release-text-diffs \
+                --results-directory "$root" "${arguments[@]}"
+        fi
+    )
 }
 
 series_results_root() {

@@ -206,6 +206,13 @@ scripts/ubuntu24-debian-non-patch-packages-pseudo-code-analysis \
   release-text-diffs 10.1.20 10.1.21
 ```
 
+Unlike the lower-level commands, `release-text-diffs` owns the container for
+the duration of its run. It first removes a same-named analysis container left
+by another checkout or worktree, starts one using the current checkout's bind
+mounts (building the image if needed), and removes it when the command exits,
+including after an error. Do not run it while another analysis operation needs
+that fixed-name container.
+
 The command rebuilds the selected-series non-patch catalogue, then selects every
 package build whose Debian version starts with the requested after-release label.
 Each is compared with the newest retained build of the same package whose version
