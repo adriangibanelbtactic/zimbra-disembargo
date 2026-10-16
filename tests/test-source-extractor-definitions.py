@@ -2,6 +2,7 @@
 """Validate every checked-in source extractor definition."""
 import importlib.machinery
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -20,8 +21,13 @@ definitions = sorted((ROOT / "source-extractors").glob("*.json"))
 assert definitions
 upstream_definitions = {}
 for definition in definitions:
+    raw = json.loads(definition.read_text(encoding="utf-8"))
+    assert ".java" in raw.get("filter-negative", []), (
+        f"{definition} must explicitly exclude .java artifacts"
+    )
     loaded = module.load_definition(definition)
     assert loaded["name"] == definition.stem
+    assert ".java" in loaded["filter-negative"]
     for translation in (
         "AjxMsg*properties",
         "ZaMsg*properties",
