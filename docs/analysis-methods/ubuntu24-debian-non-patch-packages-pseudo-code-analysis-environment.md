@@ -243,18 +243,22 @@ one diff; paths without such a mapping are combined when two or more changed
 text artifacts share the same direct payload directory. An unmapped directory
 with only one changed text artifact retains one diff per file.
 
-`upstream_diffs/` contains only mappings with both `artifact-root` and
-`source-root`. For each file below such a root, the diff labels are rewritten
+`upstream_diffs/` contains mappings with both `artifact-root` and `source-root`,
+plus direct `artifact` mappings with a non-empty `source-roots` list and no
+`derivation`. For each file below a directory root, the diff labels are rewritten
 deterministically from the installed path to the corresponding upstream path.
-For example, an installed `opt/zimbra/bin/zmlicensectl` mapping to `src/bin`
-has `before/src/bin/zmlicensectl` and `after/src/bin/zmlicensectl` labels. This
-is the patch-ready representation for that upstream repository.
+For a qualifying direct artifact, the installed directory is discarded and the
+artifact filename is appended to its configured source root. For example,
+`opt/zimbra/jetty_base/webapps/zimbra/public/login.jsp` with source root
+`WebRoot/public` becomes `before/WebRoot/public/login.jsp` and
+`after/WebRoot/public/login.jsp`. A source root that already names the artifact
+file is used directly. This is the patch-ready representation for that upstream
+repository.
 
 `binary_only_diffs/` contains one raw installed-path diff for every text
-artifact that has no applicable `artifact-root`/`source-root` mapping. This
-includes direct artifact and artifact-root-only extractor mappings, along with
-unmapped package artifacts; those mappings do not establish a deterministic
-installed-path to source-path rewrite.
+artifact that has no applicable deterministic mapping. This includes direct
+artifacts with a derivation, direct artifacts without source roots,
+artifact-root-only mappings, and unmapped package artifacts.
 
 Each filename encodes the mapped upstream GitHub repository, target release,
 and a zero-padded sequence, for example

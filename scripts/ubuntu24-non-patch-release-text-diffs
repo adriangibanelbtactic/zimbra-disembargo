@@ -192,12 +192,18 @@ def source_extractor_mappings(definitions: Path) -> dict[str, list[dict]]:
             artifact = mapping.get("artifact")
             root = mapping.get("artifact-root")
             source_root = mapping.get("source-root")
+            source_roots = mapping.get("source-roots")
             if not isinstance(package, str) or not package or (artifact is not None and not isinstance(artifact, str)) or (root is not None and not isinstance(root, str)) or (source_root is not None and not isinstance(source_root, str)):
                 raise ReleaseTextDiffError(f"Source extractor definition {definition_path} has an invalid package artifact mapping")
             if artifact is None and (root is None or not root.strip("/")):
                 raise ReleaseTextDiffError(f"Source extractor definition {definition_path} mapping has no artifact or artifact-root")
             if source_root is not None and not source_root.strip("/"):
                 raise ReleaseTextDiffError(f"Source extractor definition {definition_path} mapping has an empty source-root")
+            if source_roots is not None and (
+                not isinstance(source_roots, list)
+                or not all(isinstance(item, str) and item.strip("/") for item in source_roots)
+            ):
+                raise ReleaseTextDiffError(f"Source extractor definition {definition_path} mapping has an invalid source-roots list")
             package_mappings.setdefault(package, []).append(
                 {
                     "github_repository": github_repository,
@@ -205,6 +211,8 @@ def source_extractor_mappings(definitions: Path) -> dict[str, list[dict]]:
                     "artifact": artifact.strip("/") if isinstance(artifact, str) else None,
                     "artifact_root": root.strip("/") if isinstance(root, str) else None,
                     "source_root": source_root.strip("/") if isinstance(source_root, str) else None,
+                    "source_roots": [item.strip("/") for item in source_roots] if isinstance(source_roots, list) else [],
+                    "derivation": mapping.get("derivation") is not None,
                 }
             )
     return package_mappings
@@ -304,9 +312,8 @@ def upstream_for_artifact(mappings: dict[str, list[dict]], package: str, path: s
 def root_source_mapping_for_artifact(mappings: dict[str, list[dict]], package: str, path: str) -> dict | None:
     """Return the most-specific one-to-one artifact-root/source-root mapping.
 
-    Only this mapping form gives a deterministic installed-path to upstream-path
-    substitution. Direct artifact mappings can be bundles or otherwise require
-    source-hunk reconstruction, so they deliberately remain binary-only.
+    A directory mapping gives a deterministic installed-path to upstream-path
+    substitution for every artifact below that root.
     """
     candidates = [
         mapping
@@ -337,6 +344,40 @@ def upstream_path_for_artifact(mapping: dict, path: str) -> str:
     except ValueError as error:
         raise ReleaseTextDiffError(f"Artifact {path} is outside configured root {mapping['artifact_root']}") from error
     return (PurePosixPath(mapping["source_root"]) / relative).as_posix()
+
+
+def direct_source_mapping_for_artifact(mappings: dict[str, list[dict]], package: str, path: str) -> dict | None:
+    """Return an unambiguous direct-artifact source-root substitution.
+
+    A direct artifact can be a generated bundle, so mappings with ``derivation``
+    remain in ``binary_only_diffs``. For an ordinary direct artifact, its
+    installed directory is packaging-specific and is deliberately discarded:
+    the upstream path is its configured source root plus the artifact filename.
+    A source root whose basename is already that filename denotes the complete
+    upstream path, as used by the ``Resources.jsp`` mapping.
+    """
+    candidates = [
+        mapping
+        for mapping in mappings.get(package, [])
+        if mapping["artifact"] == path and mapping["source_roots"] and not mapping["derivation"]
+    ]
+    if not candidates:
+        return None
+    filename = PurePosixPath(path).name
+    resolved = []
+    for mapping in candidates:
+        for source_root in mapping["source_roots"]:
+            source = PurePosixPath(source_root)
+            upstream_path = source.as_posix() if source.name == filename else (source / filename).as_posix()
+            resolved.append((mapping, source_root, upstream_path))
+    identities = {
+        (mapping["github_repository"], mapping["repository"], source_root, upstream_path)
+        for mapping, source_root, upstream_path in resolved
+    }
+    if len(identities) != 1:
+        raise ReleaseTextDiffError(f"Ambiguous direct artifact/source-roots mapping for {package}:{path}")
+    mapping, source_root, upstream_path = resolved[0]
+    return {**mapping, "source_root": source_root, "upstream_path": upstream_path}
 
 
 def generated_diff_filename(upstream: dict, after_release: str, sequences: dict[str, int]) -> str:
@@ -468,6 +509,7 @@ def create_release_text_diffs(
             if not text:
                 continue
             root_source_mapping = root_source_mapping_for_artifact(configured_mappings, after.name, relative_path)
+            direct_source_mapping = direct_source_mapping_for_artifact(configured_mappings, after.name, relative_path)
             text_candidates.append(
                 {
                     "change": change,
@@ -483,8 +525,9 @@ def create_release_text_diffs(
                     "upstream_path": (
                         upstream_path_for_artifact(root_source_mapping, relative_path)
                         if root_source_mapping is not None
-                        else None
+                        else direct_source_mapping["upstream_path"] if direct_source_mapping is not None else None
                     ),
+                    "direct_source_mapping": direct_source_mapping,
                 }
             )
 
@@ -551,28 +594,35 @@ def create_release_text_diffs(
                 candidate["binary_package_diff"] = str(diff.relative_to(output))
             total_binary_package_diffs += 1
 
-        upstream_groups: dict[tuple[str, str, str, str], list[dict]] = {}
+        upstream_groups: dict[tuple[str, str, str, str, str], list[dict]] = {}
         binary_only_candidates = []
         for candidate in text_candidates:
-            mapping = candidate["root_source_mapping"]
+            mapping = candidate["root_source_mapping"] or candidate["direct_source_mapping"]
             if mapping is None:
                 binary_only_candidates.append(candidate)
                 continue
+            mapping_kind = (
+                "artifact-root/source-root"
+                if candidate["root_source_mapping"] is not None
+                else "artifact/source-roots"
+            )
+            artifact_mapping = mapping["artifact_root"] or mapping["artifact"]
             upstream_groups.setdefault(
                 (
                     mapping["github_repository"],
                     mapping["repository"],
-                    mapping["artifact_root"],
+                    mapping_kind,
+                    artifact_mapping,
                     mapping["source_root"],
                 ),
                 [],
             ).append(candidate)
         upstream_diff_groups = []
-        for (github_repository, repository, artifact_root, source_root), candidates in sorted(upstream_groups.items()):
+        for (github_repository, repository, mapping_kind, artifact_mapping, source_root), candidates in sorted(upstream_groups.items()):
             upstream = {
                 "github_repository": github_repository,
                 "repository": repository,
-                "selection": "artifact-root/source-root",
+                "selection": mapping_kind,
             }
             diff = output / "upstream_diffs" / generated_diff_filename(upstream, after_release, upstream_sequences)
             write_directory_diff(diff, candidates, "upstream_path")
@@ -580,7 +630,9 @@ def create_release_text_diffs(
             upstream_diff_groups.append(
                 {
                     "upstream": upstream,
-                    "artifact_root": artifact_root,
+                    "mapping": mapping_kind,
+                    "artifact_root": artifact_mapping if mapping_kind == "artifact-root/source-root" else None,
+                    "artifact": artifact_mapping if mapping_kind == "artifact/source-roots" else None,
                     "source_root": source_root,
                     "upstream_diff": relative_diff,
                     "artifacts": [candidate["path"] for candidate in candidates],
