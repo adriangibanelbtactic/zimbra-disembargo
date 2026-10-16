@@ -40,7 +40,7 @@ esac
         "FAKE_DOCKER_STATE": str(state),
     }
     subprocess.run(
-        [str(WRAPPER), "release-text-diffs", "10.1.20", "10.1.21"],
+        [str(WRAPPER), "release-text-diffs", "10.1.21"],
         cwd=ROOT,
         env=environment,
         check=True,

@@ -46,6 +46,28 @@ def packages_for_release(packages: dict, package_name: str, release: str) -> lis
     return [package for package in packages.get(package_name, []) if prefix.match(package.version)]
 
 
+def previous_release(packages: dict, after_release: str) -> str:
+    """Find the highest retained numeric release label below AFTER_RELEASE."""
+    target = tuple(int(part) for part in after_release.split("."))
+    labels = set()
+    for versions in packages.values():
+        for package in versions:
+            match = re.match(r"^([0-9]+\.[0-9]+\.[0-9]+)(?:[.-]|$)", package.version)
+            if match:
+                labels.add(match.group(1))
+    earlier = [label for label in labels if tuple(int(part) for part in label.split(".")) < target]
+    if not earlier:
+        raise ReleaseTextDiffError(f"No retained release before {after_release} is available in the non-patch catalogue")
+    return max(earlier, key=lambda label: tuple(int(part) for part in label.split(".")))
+
+
+def selected_releases(packages: dict, before_or_after: str, after_release: str | None) -> tuple[str, str]:
+    """Return an explicit pair or resolve the nearest retained earlier release."""
+    if after_release is not None:
+        return before_or_after, after_release
+    return previous_release(packages, before_or_after), before_or_after
+
+
 def release_comparisons(packages: dict, before_release: str, after_release: str) -> tuple[list[tuple], list[dict]]:
     """Pair every target-release build with the newest exact baseline-release build.
 
@@ -196,14 +218,17 @@ def artifact_record(change: str, before_artifact: object | None, after_artifact:
     }
 
 
-def create_release_text_diffs(before_release: str, after_release: str, results: Path, output_root: Path | None = None) -> Path:
-    if not RELEASE_VERSION.fullmatch(before_release) or not RELEASE_VERSION.fullmatch(after_release):
+def create_release_text_diffs(
+    before_or_after: str, after_release: str | None, results: Path, output_root: Path | None = None
+) -> Path:
+    if not RELEASE_VERSION.fullmatch(before_or_after) or (after_release is not None and not RELEASE_VERSION.fullmatch(after_release)):
         raise ReleaseTextDiffError("Release labels must use numeric X.Y.Z form")
-    if before_release == after_release:
-        raise ReleaseTextDiffError("Before and after releases must differ")
 
     catalogue = results / "zimbra-non-patch-debian-package-catalogue.json"
     packages = INSPECTOR.write_catalogue(catalogue)
+    before_release, after_release = selected_releases(packages, before_or_after, after_release)
+    if before_release == after_release:
+        raise ReleaseTextDiffError("Before and after releases must differ")
     comparisons, skipped = release_comparisons(packages, before_release, after_release)
     if not comparisons:
         raise ReleaseTextDiffError(
@@ -277,15 +302,15 @@ def create_release_text_diffs(before_release: str, after_release: str, results: 
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("before_release", help="baseline release label, for example 10.1.20")
-    parser.add_argument("after_release", help="target release label, for example 10.1.21")
+    parser = argparse.ArgumentParser(description=__doc__, usage="%(prog)s [options] [<before-release>] <after-release>")
+    parser.add_argument("before_or_after", help="after release, or before release when AFTER is also supplied")
+    parser.add_argument("after", nargs="?", help="optional target release, for example 10.1.21")
     parser.add_argument("--results-directory", type=Path, default=Path("/results"))
     parser.add_argument("--output-directory", type=Path, help="parent directory for the release-named diff folder")
     arguments = parser.parse_args()
     try:
         output = create_release_text_diffs(
-            arguments.before_release, arguments.after_release, arguments.results_directory, arguments.output_directory
+            arguments.before_or_after, arguments.after, arguments.results_directory, arguments.output_directory
         )
     except (ReleaseTextDiffError, INSPECTOR.AnalysisError) as error:
         print(f"error: {error}", file=sys.stderr)

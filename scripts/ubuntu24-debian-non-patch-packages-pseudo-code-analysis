@@ -27,7 +27,7 @@ Commands:
            Select a catalogued non-patch package and two repository versions.
   source-extract <extractor> [<before-release>] <after-release>
             Download the selected-series package builds and print an upstream-ready diff.
-  release-text-diffs <before-release> <after-release>
+  release-text-diffs [<before-release>] <after-release>
              Write every retained non-patch text-payload diff for one release pair.
   source-extract-manual <extractor> --tag <upstream-tag> --inspection-directory <path>
             Inspect an existing package comparison and report artifact hunks.

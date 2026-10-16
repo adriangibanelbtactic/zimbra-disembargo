@@ -137,8 +137,9 @@ that map selected package artifacts to public upstream Git paths and preserve
 unmatched artifact hunks for review.
 
 For a release-level folder of all retained non-patch textual payload diffs, use
-`release-text-diffs <before-release> <after-release>` in that environment. The
-full selection and output rules are documented in the same environment guide.
+`release-text-diffs <after-release>` in that environment; an explicit
+`<before-release>` remains optional. The full selection and output rules are
+documented in the same environment guide.
 
 See [source extractor usage][source-extractor-usage] for automatic previous-tag
 selection and its upstream-ready diff output.

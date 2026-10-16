@@ -203,7 +203,7 @@ payload diff for an explicit release pair, run:
 
 ```sh
 scripts/ubuntu24-debian-non-patch-packages-pseudo-code-analysis \
-  release-text-diffs 10.1.20 10.1.21
+  release-text-diffs 10.1.21
 ```
 
 Unlike the lower-level commands, `release-text-diffs` owns the container for
@@ -215,10 +215,19 @@ that fixed-name container.
 
 The command rebuilds the selected-series non-patch catalogue, then selects every
 package build whose Debian version starts with the requested after-release label.
-Each is compared with the newest retained build of the same package whose version
-starts with the requested before-release label. It does not fall back to another
-release: packages without an exact retained before build are recorded as skipped
-in the report.
+When only the target release is supplied, it selects the highest retained numeric
+`X.Y.Z` release below it as the baseline (`10.1.20` for `10.1.21`). Supply both
+labels to select the baseline explicitly:
+
+```sh
+scripts/ubuntu24-debian-non-patch-packages-pseudo-code-analysis \
+  release-text-diffs 10.1.20 10.1.21
+```
+
+Each target build is compared with the newest retained build of the same package
+whose version starts with the selected before-release label. It does not fall
+back to another release: packages without an exact retained before build are
+recorded as skipped in the report.
 
 The command prints a unique output directory such as:
 

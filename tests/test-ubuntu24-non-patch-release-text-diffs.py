@@ -38,6 +38,9 @@ assert skipped == [{
     "after_versions": ["10.1.21.1-1.u24"],
     "reason": "no retained build for requested before release 10.1.20",
 }]
+assert module.previous_release(catalogue, "10.1.21") == "10.1.20"
+assert module.selected_releases(catalogue, "10.1.21", None) == ("10.1.20", "10.1.21")
+assert module.selected_releases(catalogue, "10.1.20", "10.1.21") == ("10.1.20", "10.1.21")
 assert module.is_text_mime("text/plain")
 assert module.is_text_mime("application/javascript")
 assert not module.is_text_mime("application/octet-stream")
@@ -84,7 +87,7 @@ with tempfile.TemporaryDirectory() as temporary_directory:
     module.INSPECTOR.write_catalogue = fake_catalogue
     module.INSPECTOR.compare = fake_compare
     try:
-        output = module.create_release_text_diffs("10.1.20", "10.1.21", temporary / "results")
+        output = module.create_release_text_diffs("10.1.21", None, temporary / "results")
     finally:
         module.INSPECTOR.write_catalogue = original_catalogue
         module.INSPECTOR.compare = original_compare
