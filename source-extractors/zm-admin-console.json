@@ -6,10 +6,12 @@
     "url": "https://github.com/Zimbra/zm-admin-console.git"
   },
   "artifact-positive": [
-    "opt/zimbra/jetty_base/webapps/zimbraAdmin/js/Admin_all.js"
+    "opt/zimbra/jetty_base/webapps/zimbraAdmin/js/Admin_all.js",
+    "opt/zimbra/jetty_base/webapps/zimbraAdmin/WEB-INF/web.xml"
   ],
   "filter-positive": [
-    ".js"
+    ".js",
+    ".xml"
   ],
   "filter-negative": [
     ".jar",
@@ -20,6 +22,16 @@
     ".zgz"
   ],
   "mappings": [
+    {
+      "package": "zimbra-mbox-admin-console-war",
+      "artifact": "opt/zimbra/jetty_base/webapps/zimbraAdmin/WEB-INF/web.xml",
+      "source-roots": [
+        "WebRoot/WEB-INF"
+      ],
+      "source-suffixes": [
+        ".xml"
+      ]
+    },
     {
       "package": "zimbra-mbox-admin-console-war",
       "artifact": "opt/zimbra/jetty_base/webapps/zimbraAdmin/js/Admin_all.js",

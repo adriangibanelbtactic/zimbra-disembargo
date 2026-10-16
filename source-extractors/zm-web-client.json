@@ -15,6 +15,8 @@
     "opt/zimbra/jetty_base/webapps/zimbra/js/zimbraMail/calendar/view/ZmReminderDialog.js",
     "opt/zimbra/jetty_base/webapps/zimbra/js/zimbraMail/mail/view/ZmInviteMsgView.js",
     "opt/zimbra/jetty_base/webapps/zimbra/js/zimbraMail/voicemail/view/ZmCallListView.js",
+    "opt/zimbra/jetty_base/webapps/zimbra/js/zimbraMail/core/ZmMimeTable.js",
+    "opt/zimbra/jetty_base/webapps/zimbra/js/zimbraMail/mail/view/ZmMailMsgView.js",
     "opt/zimbra/conf/templates/mail/Message.template",
     "opt/zimbra/jetty_base/webapps/zimbra/public/Resources.jsp"
   ],
@@ -34,6 +36,26 @@
     ".zgz"
   ],
   "mappings": [
+    {
+      "package": "zimbra-mbox-webclient-war",
+      "artifact": "opt/zimbra/jetty_base/webapps/zimbra/js/zimbraMail/core/ZmMimeTable.js",
+      "source-roots": [
+        "WebRoot/js/zimbraMail/core"
+      ],
+      "source-suffixes": [
+        ".js"
+      ]
+    },
+    {
+      "package": "zimbra-mbox-webclient-war",
+      "artifact": "opt/zimbra/jetty_base/webapps/zimbra/js/zimbraMail/mail/view/ZmMailMsgView.js",
+      "source-roots": [
+        "WebRoot/js/zimbraMail/mail/view"
+      ],
+      "source-suffixes": [
+        ".js"
+      ]
+    },
     {
       "package": "zimbra-mbox-webclient-war",
       "artifact-root": "opt/zimbra/jetty_base/webapps/zimbra/WEB-INF/tags/rest",
