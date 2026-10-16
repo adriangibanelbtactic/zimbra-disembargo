@@ -224,7 +224,7 @@ The command prints a unique output directory such as:
 
 ```text
 var/ubuntu24-debian-non-patch-packages-pseudo-code-analysis/results/
-  release-text-diffs/10.1.20__to__10.1.21/
+  release-text-diffs/10.1.21/
 ```
 
 Its `diffs/<package>/<before-build>__to__<after-build>/` tree contains one

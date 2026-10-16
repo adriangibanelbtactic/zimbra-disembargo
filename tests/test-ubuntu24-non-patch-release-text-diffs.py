@@ -91,7 +91,7 @@ with tempfile.TemporaryDirectory() as temporary_directory:
 
     manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
     report = json.loads((output / "text-artifacts.json").read_text(encoding="utf-8"))
-    assert output.name == "10.1.20__to__10.1.21"
+    assert output.name == "10.1.21"
     assert manifest["comparisons"] == 2
     assert manifest["text_diffs"] == 6
     assert manifest["skipped_packages"] == skipped

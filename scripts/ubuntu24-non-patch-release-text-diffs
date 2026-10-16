@@ -194,7 +194,7 @@ def create_release_text_diffs(before_release: str, after_release: str, results: 
         )
 
     root = output_root or results / "release-text-diffs"
-    output = unique_directory(root / f"{INSPECTOR.safe_name(before_release)}__to__{INSPECTOR.safe_name(after_release)}")
+    output = unique_directory(root / INSPECTOR.safe_name(after_release))
     report = []
     total_changed = 0
     total_text = 0
