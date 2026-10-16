@@ -207,23 +207,27 @@ The result contains:
   diff(s);
 - `matched-artifact-hunks.json`: changed package hunks with one exact mapped
   baseline source location; and
-- `unmatched-artifact-hunks.json`: changed text hunks from every common package
-  artifact that passes the extractor filters but has no mapped source-hunk
-  match. This also records ambiguous matches instead of choosing a source file
-  arbitrarily.
+- `unmatched-artifact-hunks.json`: changed text hunks from every modified or
+  removed package artifact that passes the extractor filters but has no mapped
+  source-hunk match. This also records ambiguous matches instead of choosing a
+  source file arbitrarily.
 
 Extractor definitions can use `artifact-positive` to scope an extractor to
 specific installed artifact paths. An empty list accepts every changed common
-artifact. Within that scope, suffix filters apply: `filter-positive` is an
+artifact. A matching `artifact-root` / `source-root` mapping also includes every
+baseline-source-backed artifact below that root, including removed files.
+Within that scope, suffix filters apply: `filter-positive` is an
 allow-list and `filter-negative` is a deny-list. The default negative suffixes
 are `.jar`, `.class`, `.java`, `ZaMsg*properties`, `ZsMsg*properties`, and
 `.zgz`. The `ZaMsg*properties` and `ZsMsg*properties` filename globs exclude
 translated Admin Console and mailbox message resources without excluding other
 properties files. New extractor definitions must retain both exclusions when
 they specify `filter-negative`; omitting that field inherits the default list.
-The `zm-ajax` definition deliberately has an empty positive filter. Binary
-changes and changed files added or removed between package versions have no
-unified text hunk and are not entries in the unmatched-hunk report.
+The `zm-ajax` definition deliberately has an empty positive filter. Added files
+have no before-side text and cannot be reconstructed, so they are counted in
+the extraction manifest but have no entry in the unmatched-hunk report. Removed
+text files are reconstructed as source deletions when their full package hunk
+has one unique baseline source match.
 
 Use exactly **one extractor definition per upstream GitHub repository**. When
 another release exposes a new textual package artifact for an already covered

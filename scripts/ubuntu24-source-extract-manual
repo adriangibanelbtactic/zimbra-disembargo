@@ -213,14 +213,23 @@ def parse_hunks(patch: bytes) -> list[Hunk]:
 def make_hunk(header: str, body: list[str]) -> Hunk:
     before_lines: list[str] = []
     after_lines: list[str] = []
+    previous_prefix = ""
     for line in body:
         if line.startswith("-"):
             before_lines.append(line[1:])
+            previous_prefix = "-"
         elif line.startswith("+"):
             after_lines.append(line[1:])
+            previous_prefix = "+"
         elif line.startswith(" "):
             before_lines.append(line[1:])
             after_lines.append(line[1:])
+            previous_prefix = " "
+        elif line.startswith("\\ No newline at end of file"):
+            if previous_prefix in ("-", " ") and before_lines and before_lines[-1].endswith("\n"):
+                before_lines[-1] = before_lines[-1][:-1]
+            if previous_prefix in ("+", " ") and after_lines and after_lines[-1].endswith("\n"):
+                after_lines[-1] = after_lines[-1][:-1]
     return Hunk(header.rstrip("\n"), tuple(before_lines), tuple(after_lines), "".join([header, *body]))
 
 
@@ -267,10 +276,20 @@ def inventory(path: Path) -> dict[str, Artifact]:
     return values
 
 
-def changed_artifact_paths(inspection: Path) -> list[str]:
+def classified_artifacts(inspection: Path) -> list[tuple[str, str]]:
+    """Classify modified, removed, and added package artifacts.
+
+    Added artifacts have no before-side text to locate in the public baseline,
+    so extraction records their count but does not try to reconstruct them.
+    """
     before = inventory(inspection / "before" / "package-artifacts.json")
     after = inventory(inspection / "after" / "package-artifacts.json")
-    return [path for path in sorted(before.keys() & after.keys()) if before[path].md5 != after[path].md5]
+    modified = [path for path in before.keys() & after.keys() if before[path].md5 != after[path].md5]
+    removed = before.keys() - after.keys()
+    added = after.keys() - before.keys()
+    return [(path, "modified") for path in sorted(modified)] + [
+        (path, "removed") for path in sorted(removed)
+    ] + [(path, "added") for path in sorted(added)]
 
 
 def path_matches_filter(path: str, pattern: str) -> bool:
@@ -286,14 +305,20 @@ def path_passes_filters(path: str, positive: list[str], negative: list[str]) -> 
     )
 
 
-def source_patch(path: str, before_lines: tuple[str, ...], after_lines: tuple[str, ...]) -> bytes:
+def source_patch(path: str, before_lines: tuple[str, ...], after_lines: tuple[str, ...], *, deleted: bool = False) -> bytes:
     """Render an applyable Git-style text patch using repository-relative paths."""
     if before_lines == after_lines:
         return b""
     contents = [f"diff --git a/{path} b/{path}\n"]
-    contents.extend(
-        difflib.unified_diff(before_lines, after_lines, fromfile=f"a/{path}", tofile=f"b/{path}", n=3)
-    )
+    if deleted:
+        contents.append("deleted file mode 100644\n")
+    after_name = "/dev/null" if deleted else f"b/{path}"
+    for line in difflib.unified_diff(before_lines, after_lines, fromfile=f"a/{path}", tofile=after_name, n=3):
+        if line.startswith((" ", "+", "-")) and not line.endswith("\n"):
+            contents.append(line + "\n")
+            contents.append("\\ No newline at end of file\n")
+        else:
+            contents.append(line)
     return "".join(contents).encode("utf-8")
 
 
@@ -378,16 +403,15 @@ def extract(
     artifact_positive = definition["artifact-positive"]
     matched_hunks: list[dict[str, object]] = []
     unmatched_hunks: list[dict[str, object]] = []
-    replacements: dict[str, list[tuple[int, Hunk]]] = {}
+    replacements: dict[str, list[tuple[int, Hunk, str]]] = {}
     filtered_paths: list[str] = []
     skipped_paths: list[str] = []
     out_of_scope_paths: list[str] = []
     root_scoped_paths: list[str] = []
     text_hunk_count = 0
-    changed_artifacts = changed_artifact_paths(inspection)
-    for artifact in changed_artifacts:
-        if artifact_positive and artifact not in artifact_positive:
-            out_of_scope_paths.append(artifact)
+    changed_artifacts = classified_artifacts(inspection)
+    for artifact, change in changed_artifacts:
+        if change == "added":
             continue
         root_candidates = [
             f"{mapping['source-root']}/{artifact.removeprefix(mapping['artifact-root'] + '/')}"
@@ -395,6 +419,9 @@ def extract(
             if artifact.startswith(mapping["artifact-root"] + "/")
             and f"{mapping['source-root']}/{artifact.removeprefix(mapping['artifact-root'] + '/')}" in sources
         ]
+        if artifact_positive and artifact not in artifact_positive and not root_candidates:
+            out_of_scope_paths.append(artifact)
+            continue
         if not artifact_positive and root_sources_by_mapping and artifact not in source_paths_by_artifact and not root_candidates:
             root_scoped_paths.append(artifact)
             continue
@@ -407,14 +434,14 @@ def extract(
         patch = git_diff(
             repository,
             str(inspection / "before" / "payload" / artifact),
-            str(inspection / "after" / "payload" / artifact),
+            "/dev/null" if change == "removed" else str(inspection / "after" / "payload" / artifact),
             unified=3,
             no_index=True,
         )
         hunks = parse_hunks(patch)
         text_hunk_count += len(hunks)
         for hunk in hunks:
-            base = {"artifact": artifact, "hunk": hunk.header, "patch": hunk.patch}
+            base = {"artifact": artifact, "change": change, "hunk": hunk.header, "patch": hunk.patch}
             candidates = sorted(set([*source_paths_by_artifact.get(artifact, []), *root_candidates]))
             matches = [
                 (source, offset)
@@ -424,11 +451,11 @@ def extract(
             if len(matches) == 1:
                 source, offset = matches[0]
                 end = offset + len(hunk.before_lines)
-                overlaps = any(offset < old_offset + len(old_hunk.before_lines) and old_offset < end for old_offset, old_hunk in replacements.get(source, []))
+                overlaps = any(offset < old_offset + len(old_hunk.before_lines) and old_offset < end for old_offset, old_hunk, _ in replacements.get(source, []))
                 if overlaps:
                     unmatched_hunks.append({**base, "reason": "overlapping-source-hunk-match", "source": source})
                 else:
-                    replacements.setdefault(source, []).append((offset, hunk))
+                    replacements.setdefault(source, []).append((offset, hunk, change))
                     matched_hunks.append(
                         {
                             **base,
@@ -461,15 +488,21 @@ def extract(
     for source, source_replacements in sorted(replacements.items()):
         before_lines = baseline_sources[source]
         after_lines = list(before_lines)
-        for offset, hunk in sorted(source_replacements, reverse=True):
+        for offset, hunk, _ in sorted(source_replacements, reverse=True):
             after_lines[offset : offset + len(hunk.before_lines)] = hunk.after_lines
-        patch = source_patch(source, before_lines, tuple(after_lines))
+        deleted = len(source_replacements) == 1 and source_replacements[0][2] == "removed" and not after_lines
+        patch = source_patch(source, before_lines, tuple(after_lines), deleted=deleted)
         destination = result / "upstream-diffs" / f"{source}.diff"
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(patch)
         combined_patch.append(patch)
         source_results.append(
-            {"path": source, "diff": str(destination.relative_to(result)), "mapped_hunks": len(source_replacements)}
+            {
+                "path": source,
+                "diff": str(destination.relative_to(result)),
+                "mapped_hunks": len(source_replacements),
+                "deleted": deleted,
+            }
         )
 
     upstream_diff = result / "upstream.diff"
@@ -497,7 +530,9 @@ def extract(
         "upstream_diff": str(upstream_diff.relative_to(result)),
         "source_files": source_results,
         "artifact_hunks": {
-            "changed_common_artifacts": len(changed_artifacts),
+            "changed_common_artifacts": sum(change == "modified" for _, change in changed_artifacts),
+            "removed_artifacts": sum(change == "removed" for _, change in changed_artifacts),
+            "added_artifacts": sum(change == "added" for _, change in changed_artifacts),
             "artifact_positive_excluded_artifacts": len(out_of_scope_paths),
             "artifact_root_excluded_artifacts": len(root_scoped_paths),
             "filter_positive_artifacts": len(filtered_paths),

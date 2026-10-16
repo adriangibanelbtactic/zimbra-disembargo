@@ -56,6 +56,8 @@ with tempfile.TemporaryDirectory() as temporary_directory:
     rooted_source = upstream / "src/bin/example-tool"
     rooted_source.parent.mkdir(parents=True)
     rooted_source.write_text("timeout=60\n", encoding="utf-8")
+    removed_rooted_source = upstream / "src/bin/removed-tool"
+    removed_rooted_source.write_text("obsolete=true", encoding="utf-8")
     run("git", "add", ".", cwd=upstream)
     run("git", "commit", "-m", "before", cwd=upstream)
     run("git", "tag", "10.1.17", cwd=upstream)
@@ -154,6 +156,10 @@ with tempfile.TemporaryDirectory() as temporary_directory:
     assert not scoped_unmatched["hunks"]
     rooted_definition = json.loads(definition.read_text(encoding="utf-8"))
     rooted_definition.pop("artifact-positive")
+    removed_rooted_artifact = Path("opt/zimbra/bin/removed-tool")
+    (before / removed_rooted_artifact).write_text("obsolete=true", encoding="utf-8")
+    write_inventory(inspection / "before" / "package-artifacts.json", before)
+    write_inventory(inspection / "after" / "package-artifacts.json", after)
     rooted_definition["mappings"] = [{
         "package": "zimbra-mbox-webclient-war",
         "artifact-root": "opt/zimbra/bin",
@@ -165,8 +171,11 @@ with tempfile.TemporaryDirectory() as temporary_directory:
     )
     rooted_manifest = json.loads((rooted_result / "manifest.json").read_text(encoding="utf-8"))
     rooted_matched = json.loads((rooted_result / "matched-artifact-hunks.json").read_text(encoding="utf-8"))
-    assert rooted_manifest["artifact_hunks"]["matched"] == 1
+    assert rooted_manifest["artifact_hunks"]["matched"] == 2
     assert rooted_manifest["artifact_hunks"]["unmatched"] == 0
     assert rooted_manifest["artifact_hunks"]["artifact_root_excluded_artifacts"] == 5
-    assert rooted_matched["hunks"][0]["source"] == "src/bin/example-tool"
+    assert {hunk["source"] for hunk in rooted_matched["hunks"]} == {"src/bin/example-tool", "src/bin/removed-tool"}
+    assert any(hunk["change"] == "removed" for hunk in rooted_matched["hunks"])
+    assert removed_rooted_source.is_file()
+    run("git", "apply", "--check", str(rooted_result / "upstream.diff"), cwd=upstream)
     assert module.baseline_tag_for_release(upstream, "10.1.20")[0] == "10.1.17"

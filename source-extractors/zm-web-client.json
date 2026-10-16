@@ -6,7 +6,6 @@
     "url": "https://github.com/Zimbra/zm-web-client.git"
   },
   "artifact-positive": [
-    "opt/zimbra/jetty_base/webapps/zimbra/WEB-INF/tags/rest/restHead.tag",
     "opt/zimbra/jetty_base/webapps/zimbra/public/launchNewWindow.jsp",
     "opt/zimbra/jetty_base/webapps/zimbra/public/launchZCS.jsp",
     "opt/zimbra/jetty_base/webapps/zimbra/h/changepass",
@@ -14,9 +13,6 @@
     "opt/zimbra/jetty_base/webapps/zimbra/js/Mail_all.js",
     "opt/zimbra/jetty_base/webapps/zimbra/js/zimbraMail/mail/view/ZmInviteMsgView.js",
     "opt/zimbra/conf/templates/mail/Message.template",
-    "opt/zimbra/jetty_base/webapps/zimbra/WEB-INF/tags/rest/restDocument.tag",
-    "opt/zimbra/jetty_base/webapps/zimbra/WEB-INF/tags/rest/restDocumentPreview.tag",
-    "opt/zimbra/jetty_base/webapps/zimbra/WEB-INF/tags/rest/restDocumentView.tag",
     "opt/zimbra/jetty_base/webapps/zimbra/public/Resources.jsp"
   ],
   "filter-positive": [
