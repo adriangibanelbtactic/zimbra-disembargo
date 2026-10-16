@@ -24,6 +24,10 @@ assert not module.path_passes_filters(
 assert not module.path_passes_filters(
     "opt/zimbra/conf/msgs/ZsMsg_fr.properties", [], module.DEFAULT_FILTER_NEGATIVE
 )
+for translation in ("ZhMsg.properties", "AjxMsg_fr.properties", "ZmMsg_de.properties"):
+    assert not module.path_passes_filters(
+        f"opt/zimbra/conf/msgs/{translation}", [], module.DEFAULT_FILTER_NEGATIVE
+    )
 
 
 def run(*arguments: str, cwd: Path) -> None:

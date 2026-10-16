@@ -321,11 +321,12 @@ artifact. A matching `artifact-root` / `source-root` mapping also includes every
 baseline-source-backed artifact below that root, including removed files.
 Within that scope, suffix filters apply: `filter-positive` is an
 allow-list and `filter-negative` is a deny-list. The default negative suffixes
-are `.jar`, `.class`, `.java`, `ZaMsg*properties`, `ZsMsg*properties`, and
-`.zgz`. The `ZaMsg*properties` and `ZsMsg*properties` filename globs exclude
-translated Admin Console and mailbox message resources without excluding other
-properties files. New extractor definitions must retain both exclusions when
-they specify `filter-negative`; omitting that field inherits the default list.
+are `.jar`, `.class`, `.java`, `AjxMsg*properties`, `ZaMsg*properties`,
+`ZhMsg*properties`, `ZmMsg*properties`, `ZsMsg*properties`, and `.zgz`. The
+five `*Msg*properties` filename globs exclude translated message resources
+without excluding other properties files. New extractor definitions must retain
+all five exclusions when they specify `filter-negative`; omitting that field
+inherits the default list.
 The `zm-ajax` definition deliberately has an empty positive filter. Added files
 have no before-side text and cannot be reconstructed, so they are counted in
 the extraction manifest but have no entry in the unmatched-hunk report. Removed

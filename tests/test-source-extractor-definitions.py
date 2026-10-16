@@ -22,8 +22,14 @@ upstream_definitions = {}
 for definition in definitions:
     loaded = module.load_definition(definition)
     assert loaded["name"] == definition.stem
-    assert "ZaMsg*properties" in loaded["filter-negative"]
-    assert "ZsMsg*properties" in loaded["filter-negative"]
+    for translation in (
+        "AjxMsg*properties",
+        "ZaMsg*properties",
+        "ZhMsg*properties",
+        "ZmMsg*properties",
+        "ZsMsg*properties",
+    ):
+        assert translation in loaded["filter-negative"]
     upstream = loaded["upstream"]["github_repository"]
     assert upstream not in upstream_definitions, (
         f"{definition} and {upstream_definitions[upstream]} both define "
