@@ -71,6 +71,17 @@ for generated_artifact in (
         "source": "WebRoot/WEB-INF/web.xml",
         "substitutions": {"@jsVersion@": "release-specific JavaScript cache-buster value"},
     }
+preferences_mapping = module.bundle_mapping_for_artifact(
+    project_mappings,
+    "zimbra-mbox-webclient-war",
+    "opt/zimbra/jetty_base/webapps/zimbra/js/Preferences_all.js",
+)
+assert preferences_mapping is not None
+assert preferences_mapping["derivation"] == {
+    "type": "ajx-package-bundle",
+    "manifest": "WebRoot/js/zimbraMail/package/Preferences.js",
+    "template-substitution": None,
+}
 assert module.upstream_for_artifact(
     project_mappings,
     "zimbra-mbox-webclient-war",
