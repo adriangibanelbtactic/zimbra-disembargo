@@ -45,6 +45,19 @@ assert module.is_text_mime("text/plain")
 assert module.is_text_mime("application/javascript")
 assert not module.is_text_mime("application/octet-stream")
 project_mappings = module.source_extractor_mappings(ROOT / "source-extractors")
+for generated_artifact in (
+    "opt/zimbra/jetty_base/etc/zimbra.web.xml.in",
+    "opt/zimbra/jetty_base/webapps/zimbra/WEB-INF/web.xml",
+):
+    generated_mapping = module.generated_mapping_for_artifact(
+        project_mappings, "zimbra-mbox-webclient-war", generated_artifact
+    )
+    assert generated_mapping is not None
+    assert generated_mapping["derivation"] == {
+        "type": "template-substitution",
+        "source": "WebRoot/WEB-INF/web.xml",
+        "substitutions": {"@jsVersion@": "release-specific JavaScript cache-buster value"},
+    }
 assert module.upstream_for_artifact(
     project_mappings,
     "zimbra-mbox-webclient-war",

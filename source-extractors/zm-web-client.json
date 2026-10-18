@@ -70,6 +70,23 @@
     },
     {
       "package": "zimbra-mbox-webclient-war",
+      "artifact": "opt/zimbra/jetty_base/webapps/zimbra/WEB-INF/web.xml",
+      "source-roots": [
+        "WebRoot/WEB-INF"
+      ],
+      "source-suffixes": [
+        ".xml"
+      ],
+      "derivation": {
+        "type": "template-substitution",
+        "source": "WebRoot/WEB-INF/web.xml",
+        "substitutions": {
+          "@jsVersion@": "release-specific JavaScript cache-buster value"
+        }
+      }
+    },
+    {
+      "package": "zimbra-mbox-webclient-war",
       "artifact": "opt/zimbra/jetty_base/webapps/zimbra/js/zimbraMail/core/ZmMimeTable.js",
       "source-roots": [
         "WebRoot/js/zimbraMail/core"
