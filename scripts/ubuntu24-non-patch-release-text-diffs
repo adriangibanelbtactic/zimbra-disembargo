@@ -196,6 +196,10 @@ def source_extractor_mappings(definitions: Path) -> dict[str, list[dict]]:
             source_root = mapping.get("source-root")
             source_roots = mapping.get("source-roots")
             derivation = mapping.get("derivation")
+            deduplication = MANUAL.upstream_deduplication(
+                mapping.get("upstream-deduplication"),
+                f"Source extractor definition {definition_path} mapping upstream-deduplication",
+            )
             if not isinstance(package, str) or not package or (artifact is not None and not isinstance(artifact, str)) or (root is not None and not isinstance(root, str)) or (source_root is not None and not isinstance(source_root, str)):
                 raise ReleaseTextDiffError(f"Source extractor definition {definition_path} has an invalid package artifact mapping")
             if artifact is None and (root is None or not root.strip("/")):
@@ -267,6 +271,7 @@ def source_extractor_mappings(definitions: Path) -> dict[str, list[dict]]:
                     "source_root": source_root.strip("/") if isinstance(source_root, str) else None,
                     "source_roots": [item.strip("/") for item in source_roots] if isinstance(source_roots, list) else [],
                     "derivation": derivation,
+                    "upstream_deduplication": deduplication,
                 }
             )
     return package_mappings
@@ -607,18 +612,29 @@ def reconstruct_bundle_diff(
             continue
         previous.append((offset, hunk))
     patches = []
+    source_changes = []
     matched_sources = []
     for source, source_replacements in sorted(replacements.items()):
         before_lines = baseline_sources[source]
         after_lines = list(before_lines)
         for offset, hunk in sorted(source_replacements, reverse=True):
             after_lines[offset : offset + len(hunk.before_lines)] = hunk.after_lines
-        patches.append(MANUAL.source_patch(source, before_lines, tuple(after_lines)))
+        patch = MANUAL.source_patch(source, before_lines, tuple(after_lines))
+        patches.append(patch)
+        source_changes.append(
+            {
+                "source": source,
+                "before_lines": before_lines,
+                "replacements": source_replacements,
+                "patch": patch,
+            }
+        )
         matched_sources.append(source)
     return {
         "baseline": baseline,
         "manifest": mapping["derivation"]["manifest"],
         "patch": b"".join(patches),
+        "source_changes": source_changes,
         "sources": matched_sources,
         "matched_hunks": sum(len(values) for values in replacements.values()),
         "generated_hunks": generated_hunks,
@@ -633,6 +649,40 @@ def generated_diff_filename(
     key = upstream["github_repository"] or upstream["repository"]
     sequences[key] = sequences.get(key, 0) + 1
     return f"{INSPECTOR.safe_name(upstream['repository'])}-{after_release}-{change_kind}_{sequences[key]:03d}.diff"
+
+
+def alias_hunk_key(mapping: dict, source: str, hunk: object) -> tuple[str, str, str, str, tuple[str, ...]] | None:
+    """Identify one declared-alias hunk by its baseline source-side content."""
+    deduplication = mapping.get("upstream_deduplication")
+    if deduplication is None:
+        return None
+    return (
+        mapping["github_repository"],
+        deduplication["alias-group"],
+        source,
+        hunk.header,
+        hunk.before_lines,
+    )
+
+
+def alias_hunk_record(mapping: dict, source: str, hunk: object, artifact: str, upstream_diff: str) -> dict:
+    """Record the canonical source transformation selected for an alias hunk."""
+    deduplication = mapping["upstream_deduplication"]
+    return {
+        "after_lines": hunk.after_lines,
+        "artifact": artifact,
+        "priority": deduplication["priority"],
+        "source": source,
+        "upstream_diff": upstream_diff,
+    }
+
+
+def source_patch_for_replacements(source: str, before_lines: tuple[str, ...], replacements: list[tuple[int, object]]) -> bytes:
+    """Render a source patch containing exactly the supplied baseline hunks."""
+    after_lines = list(before_lines)
+    for offset, hunk in sorted(replacements, reverse=True):
+        after_lines[offset : offset + len(hunk.before_lines)] = hunk.after_lines
+    return MANUAL.source_patch(source, before_lines, tuple(after_lines))
 
 
 def unified_diff(relative_path: str, before_path: Path | None, after_path: Path | None) -> bytes:
@@ -692,6 +742,9 @@ def artifact_record(candidate: dict, output: Path) -> dict:
         "generated": candidate.get("generated"),
         "template_hunk_diffs": candidate.get("template_hunk_diffs"),
         "upstream_diff": candidate.get("upstream_diff"),
+        "upstream_diffs": candidate.get("upstream_diffs"),
+        "suppressed_alias_hunks": candidate.get("suppressed_alias_hunks"),
+        "alias_conflicts": candidate.get("alias_conflicts"),
         "upstream_path": candidate.get("upstream_path"),
         "upstream_paths": candidate.get("upstream_paths"),
         "bundle_extraction": candidate.get("bundle_extraction"),
@@ -739,11 +792,14 @@ def create_release_text_diffs(
     total_binary_only_diffs = 0
     total_template_diffs = 0
     total_upstream_diffs = 0
+    total_upstream_alias_conflicts = 0
+    total_suppressed_alias_hunks = 0
     total_excluded_by_filters = 0
     binary_package_sequences: dict[str, int] = {}
     binary_only_sequences: dict[str, int] = {}
     template_sequences: dict[str, int] = {}
     upstream_sequences: dict[str, int] = {}
+    alias_conflict_sequences: dict[str, int] = {}
     for before, after in comparisons:
         inspection, _ = INSPECTOR.compare(before, after, results / "deb-package-inspections", catalogue)
         before_payload = inspection / "before" / "payload"
@@ -884,6 +940,7 @@ def create_release_text_diffs(
                 [],
             ).append(candidate)
         upstream_diff_groups = []
+        canonical_alias_hunks: dict[tuple[str, str, str, str, tuple[str, ...]], dict] = {}
         for (github_repository, repository, mapping_kind, artifact_mapping, source_root), candidates in sorted(upstream_groups.items()):
             upstream = {
                 "github_repository": github_repository,
@@ -909,8 +966,28 @@ def create_release_text_diffs(
             )
             for candidate in candidates:
                 candidate["upstream_diff"] = relative_diff
+                candidate.setdefault("upstream_diffs", []).append(relative_diff)
+                mapping = candidate["root_source_mapping"] or candidate["direct_source_mapping"]
+                assert mapping is not None
+                for hunk in MANUAL.parse_hunks(
+                    unified_diff(candidate["upstream_path"], candidate["before_path"], candidate["after_path"])
+                ):
+                    key = alias_hunk_key(mapping, candidate["upstream_path"], hunk)
+                    if key is not None:
+                        canonical_alias_hunks.setdefault(
+                            key,
+                            alias_hunk_record(mapping, candidate["upstream_path"], hunk, candidate["path"], relative_diff),
+                        )
             total_upstream_diffs += 1
-        for candidate, mapping in bundle_candidates:
+        for candidate, mapping in sorted(
+            bundle_candidates,
+            key=lambda item: (
+                item[1]["upstream_deduplication"]["priority"]
+                if item[1]["upstream_deduplication"] is not None
+                else sys.maxsize,
+                item[0]["path"],
+            ),
+        ):
             extraction = reconstruct_bundle_diff(mapping, candidate, before_release, after_release, repository_cache)
             candidate["bundle_extraction"] = {
                 "baseline": extraction["baseline"],
@@ -927,20 +1004,81 @@ def create_release_text_diffs(
                 ],
                 "unmatched_hunks": extraction["unmatched_hunks"],
             }
-            if extraction["patch"]:
-                upstream = {
-                    "github_repository": mapping["github_repository"],
-                    "repository": mapping["repository"],
-                    "selection": "ajx-package-bundle",
-                }
-                diff = output / "upstream_diffs" / generated_diff_filename(
-                    upstream, after_release, upstream_sequences, "upstream-changes"
-                )
-                diff.parent.mkdir(parents=True, exist_ok=True)
-                diff.write_bytes(extraction["patch"])
-                candidate["upstream_diff"] = str(diff.relative_to(output))
-                candidate["upstream_paths"] = extraction["sources"]
-                total_upstream_diffs += 1
+            upstream = {
+                "github_repository": mapping["github_repository"],
+                "repository": mapping["repository"],
+                "selection": "ajx-package-bundle",
+            }
+            canonical_sources = []
+            for source_change in extraction["source_changes"]:
+                canonical_replacements = []
+                conflict_replacements = []
+                for offset, hunk in source_change["replacements"]:
+                    key = alias_hunk_key(mapping, source_change["source"], hunk)
+                    canonical = canonical_alias_hunks.get(key) if key is not None else None
+                    if canonical is None:
+                        canonical_replacements.append((offset, hunk))
+                        continue
+                    if canonical["after_lines"] == hunk.after_lines:
+                        candidate.setdefault("suppressed_alias_hunks", []).append(
+                            {
+                                "source": source_change["source"],
+                                "hunk": hunk.header,
+                                "alias_group": key[1],
+                                "canonical_artifact": canonical["artifact"],
+                                "canonical_upstream_diff": canonical["upstream_diff"],
+                                "reason": "exact-source-hunk-alias",
+                            }
+                        )
+                        total_suppressed_alias_hunks += 1
+                        continue
+                    conflict_replacements.append((offset, hunk, canonical, key))
+                if canonical_replacements:
+                    diff = output / "upstream_diffs" / generated_diff_filename(
+                        upstream, after_release, upstream_sequences, "upstream-changes"
+                    )
+                    diff.parent.mkdir(parents=True, exist_ok=True)
+                    diff.write_bytes(
+                        source_patch_for_replacements(
+                            source_change["source"], source_change["before_lines"], canonical_replacements
+                        )
+                    )
+                    relative_diff = str(diff.relative_to(output))
+                    candidate.setdefault("upstream_diffs", []).append(relative_diff)
+                    candidate.setdefault("upstream_diff", relative_diff)
+                    canonical_sources.append(source_change["source"])
+                    for _, hunk in canonical_replacements:
+                        key = alias_hunk_key(mapping, source_change["source"], hunk)
+                        if key is not None:
+                            canonical_alias_hunks[key] = alias_hunk_record(
+                                mapping, source_change["source"], hunk, candidate["path"], relative_diff
+                            )
+                    total_upstream_diffs += 1
+                if conflict_replacements:
+                    replacements = [(offset, hunk) for offset, hunk, _, _ in conflict_replacements]
+                    diff = output / "upstream_diffs_alias_conflicts" / generated_diff_filename(
+                        upstream, after_release, alias_conflict_sequences, "alias-conflict-changes"
+                    )
+                    diff.parent.mkdir(parents=True, exist_ok=True)
+                    diff.write_bytes(
+                        source_patch_for_replacements(source_change["source"], source_change["before_lines"], replacements)
+                    )
+                    relative_diff = str(diff.relative_to(output))
+                    candidate.setdefault("alias_conflicts", []).extend(
+                        {
+                            "source": source_change["source"],
+                            "hunk": hunk.header,
+                            "alias_group": key[1],
+                            "canonical_artifact": canonical["artifact"],
+                            "canonical_upstream_diff": canonical["upstream_diff"],
+                            "diff": relative_diff,
+                            "reason": "same-source-hunk-different-after-lines",
+                        }
+                        for _, hunk, canonical, key in conflict_replacements
+                    )
+                    total_upstream_alias_conflicts += 1
+            if canonical_sources:
+                candidate["upstream_paths"] = canonical_sources
             for hunk in extraction["generated_hunks"]:
                 upstream = {
                     "github_repository": mapping["github_repository"],
@@ -1019,6 +1157,8 @@ def create_release_text_diffs(
                 "binary_only_diffs": total_binary_only_diffs,
                 "template_diffs": total_template_diffs,
                 "upstream_diffs": total_upstream_diffs,
+                "upstream_alias_conflicts": total_upstream_alias_conflicts,
+                "suppressed_alias_hunks": total_suppressed_alias_hunks,
                 "excluded_by_source_extractor_filters": total_excluded_by_filters,
                 "skipped_packages": skipped,
                 "boundary": "Only regular package payload files are considered. A file is textual when file(1) identifies every available side as text/* or a recognised textual application MIME type. Packages are downloaded and extracted but never installed.",
