@@ -642,6 +642,15 @@ def reconstruct_bundle_diff(
     }
 
 
+def generated_diff_filename(
+    upstream: dict, after_release: str, sequences: dict[str, int], change_kind: str = "generated-changes"
+) -> str:
+    """Return the next stable filename for one upstream repo and change representation."""
+    key = upstream["github_repository"] or upstream["repository"]
+    sequences[key] = sequences.get(key, 0) + 1
+    return f"{INSPECTOR.safe_name(upstream['repository'])}-{after_release}-{change_kind}_{sequences[key]:03d}.diff"
+
+
 def alias_hunk_key(mapping: dict, source: str, hunk: object) -> tuple[str, str, tuple[str, ...]]:
     """Identify one source hunk by its baseline source-side content.
 
