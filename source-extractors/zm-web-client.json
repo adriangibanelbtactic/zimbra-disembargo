@@ -19,6 +19,7 @@
     "opt/zimbra/jetty_base/webapps/zimbra/js/zimbraMail/mail/view/ZmMailMsgView.js",
     "opt/zimbra/jetty_base/webapps/zimbra/js/zimbraMail/mail/model/ZmMailMsg.js",
     "opt/zimbra/jetty_base/webapps/zimbra/js/zimbraMail/mail/view/ZmComposeView.js",
+    "opt/zimbra/jetty_base/webapps/zimbra/js/zimbraMail/prefs/view/ZmSharingPage.js",
     "opt/zimbra/jetty_base/webapps/zimbra/js/zimbraMail/mail/model/ZmMailListFromGroup.js",
     "opt/zimbra/conf/templates/mail/Message.template",
     "opt/zimbra/jetty_base/webapps/zimbra/public/Resources.jsp",
@@ -68,6 +69,16 @@
       "artifact": "opt/zimbra/jetty_base/webapps/zimbra/js/zimbraMail/mail/view/ZmComposeView.js",
       "source-roots": [
         "WebRoot/js/zimbraMail/mail/view"
+      ],
+      "source-suffixes": [
+        ".js"
+      ]
+    },
+    {
+      "package": "zimbra-mbox-webclient-war",
+      "artifact": "opt/zimbra/jetty_base/webapps/zimbra/js/zimbraMail/prefs/view/ZmSharingPage.js",
+      "source-roots": [
+        "WebRoot/js/zimbraMail/prefs/view"
       ],
       "source-suffixes": [
         ".js"

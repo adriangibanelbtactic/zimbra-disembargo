@@ -152,6 +152,13 @@ compose_mapping = module.direct_source_mapping_for_artifact(
 )
 assert compose_mapping is not None
 assert compose_mapping["upstream_path"] == "WebRoot/js/zimbraMail/mail/view/ZmComposeView.js"
+sharing_page_mapping = module.direct_source_mapping_for_artifact(
+    project_mappings,
+    "zimbra-mbox-webclient-war",
+    "opt/zimbra/jetty_base/webapps/zimbra/js/zimbraMail/prefs/view/ZmSharingPage.js",
+)
+assert sharing_page_mapping is not None
+assert sharing_page_mapping["upstream_path"] == "WebRoot/js/zimbraMail/prefs/view/ZmSharingPage.js"
 sequences = {}
 assert module.generated_diff_filename({"github_repository": "Zimbra/zm-web-client", "repository": "zm-web-client"}, "10.1.21", sequences) == "zm-web-client-10.1.21-generated-changes_001.diff"
 assert module.generated_diff_filename({"github_repository": "Zimbra/zm-web-client", "repository": "zm-web-client"}, "10.1.21", sequences) == "zm-web-client-10.1.21-generated-changes_002.diff"
