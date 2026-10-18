@@ -214,10 +214,10 @@ release_text_diffs() {
         root=$(series_results_root)
         if [[ -t 0 && -t 1 ]]; then
             docker exec --interactive --tty "${CONTAINER}" /project/scripts/ubuntu24-non-patch-release-text-diffs \
-                --results-directory "$root" "${arguments[@]}"
+                --results-directory "$root" --repository-cache "/work/release-text-diff-repositories/ubuntu${ubuntu_series}" "${arguments[@]}"
         else
             docker exec "${CONTAINER}" /project/scripts/ubuntu24-non-patch-release-text-diffs \
-                --results-directory "$root" "${arguments[@]}"
+                --results-directory "$root" --repository-cache "/work/release-text-diff-repositories/ubuntu${ubuntu_series}" "${arguments[@]}"
         fi
     )
 }

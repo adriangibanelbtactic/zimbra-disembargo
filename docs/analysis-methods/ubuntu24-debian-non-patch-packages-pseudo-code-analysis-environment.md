@@ -245,7 +245,9 @@ with only one changed text artifact retains one diff per file.
 
 `upstream_diffs/` contains mappings with both `artifact-root` and `source-root`,
 plus direct `artifact` mappings with a non-empty `source-roots` list and no
-`derivation`. For each file below a directory root, the diff labels are rewritten
+`derivation`. An `ajx-package-bundle` derivation is also reconstructed when every
+package before-side hunk has exactly one match in the modules required by its
+configured package manifest at the public baseline tag. For each file below a directory root, the diff labels are rewritten
 deterministically from the installed path to the corresponding upstream path.
 For a qualifying direct artifact, the installed directory is discarded and the
 artifact filename is appended to its configured source root. For example,

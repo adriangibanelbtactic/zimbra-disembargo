@@ -2,6 +2,7 @@
 import importlib.machinery
 import importlib.util
 import json
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -109,6 +110,46 @@ with tempfile.TemporaryDirectory() as temporary_directory:
     added = temporary / "added.diff"
     module.write_unified_diff(added, "opt/zimbra/added.txt", None, after)
     assert "--- before/opt/zimbra/added.txt" in added.read_text(encoding="utf-8")
+
+    bundle_upstream = temporary / "bundle-upstream"
+    bundle_upstream.mkdir()
+    subprocess.run(["git", "init"], cwd=bundle_upstream, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.test"], cwd=bundle_upstream, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=bundle_upstream, check=True)
+    source = bundle_upstream / "WebRoot/js/zimbraMail/mail/model/ZmMailMsg.js"
+    manifest = bundle_upstream / "WebRoot/js/zimbraMail/package/MailCore.js"
+    source.parent.mkdir(parents=True)
+    manifest.parent.mkdir(parents=True)
+    source.write_text("function attachment() {\n\tuseCL = attach.contentLocation && true;\n}\n", encoding="utf-8")
+    manifest.write_text('AjxPackage.require("zimbraMail.mail.model.ZmMailMsg");\n', encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=bundle_upstream, check=True)
+    subprocess.run(["git", "commit", "-m", "before"], cwd=bundle_upstream, check=True, capture_output=True)
+    subprocess.run(["git", "tag", "10.1.20"], cwd=bundle_upstream, check=True)
+    bundle_before = temporary / "MailCore_all.before.js"
+    bundle_after = temporary / "MailCore_all.after.js"
+    bundle_before.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+    bundle_after.write_text(
+        "function attachment() {\n\tuseCL = attach.contentLocation && true;\n\tattach.contentLocation = null;\n}\n",
+        encoding="utf-8",
+    )
+    reconstruction = module.reconstruct_bundle_diff(
+        {
+            "github_repository": "Example/zm-web-client",
+            "url": str(bundle_upstream),
+            "repository": "zm-web-client",
+            "source_roots": ["WebRoot/js/zimbraMail"],
+            "derivation": {"type": "ajx-package-bundle", "manifest": "WebRoot/js/zimbraMail/package/MailCore.js"},
+        },
+        {"before_path": bundle_before, "after_path": bundle_after},
+        "10.1.20",
+        "10.1.21",
+        temporary / "bundle-cache",
+    )
+    assert reconstruction["baseline"] == "10.1.20"
+    assert reconstruction["sources"] == ["WebRoot/js/zimbraMail/mail/model/ZmMailMsg.js"]
+    assert reconstruction["matched_hunks"] == 1
+    assert not reconstruction["unmatched_hunks"]
+    assert b"+\tattach.contentLocation = null;" in reconstruction["patch"]
 
     original_catalogue = module.INSPECTOR.write_catalogue
     original_compare = module.INSPECTOR.compare

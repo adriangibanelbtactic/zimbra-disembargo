@@ -29,6 +29,7 @@ def load_script(name: str, path: Path) -> ModuleType:
 
 ROOT = Path(__file__).resolve().parent
 INSPECTOR = load_script("ubuntu24_deb_non_patch_package_inspect", ROOT / "ubuntu24-deb-non-patch-package-inspect")
+MANUAL = load_script("ubuntu24_source_extract_manual", ROOT / "ubuntu24-source-extract-manual")
 RELEASE_VERSION = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 TEXT_MIME_TYPES = {
     "application/javascript",
@@ -179,6 +180,7 @@ def source_extractor_mappings(definitions: Path) -> dict[str, list[dict]]:
             raise ReleaseTextDiffError(f"Could not read source extractor definition {definition_path}: {error}") from error
         upstream = definition.get("upstream")
         github_repository = upstream.get("github_repository") if isinstance(upstream, dict) else None
+        upstream_url = upstream.get("url") if isinstance(upstream, dict) else None
         if not isinstance(github_repository, str) or github_repository.count("/") != 1:
             raise ReleaseTextDiffError(f"Source extractor definition {definition_path} has an invalid upstream GitHub repository")
         repository = github_repository.rsplit("/", 1)[1]
@@ -224,9 +226,17 @@ def source_extractor_mappings(definitions: Path) -> dict[str, list[dict]]:
                         "source": source.strip("/"),
                         "substitutions": dict(sorted(substitutions.items())),
                     }
+                elif derivation["type"] == "ajx-package-bundle":
+                    manifest = derivation.get("manifest")
+                    if not isinstance(manifest, str) or not manifest.strip("/"):
+                        raise ReleaseTextDiffError(
+                            f"Source extractor definition {definition_path} ajx-package-bundle derivation is invalid"
+                        )
+                    derivation = {"type": "ajx-package-bundle", "manifest": manifest.strip("/")}
             package_mappings.setdefault(package, []).append(
                 {
                     "github_repository": github_repository,
+                    "url": upstream_url,
                     "repository": repository,
                     "artifact": artifact.strip("/") if isinstance(artifact, str) else None,
                     "artifact_root": root.strip("/") if isinstance(root, str) else None,
@@ -430,6 +440,125 @@ def generated_mapping_for_artifact(mappings: dict[str, list[dict]], package: str
     return candidates[0]
 
 
+def bundle_mapping_for_artifact(mappings: dict[str, list[dict]], package: str, path: str) -> dict | None:
+    """Return one exact Ajx package-bundle mapping for PATH."""
+    candidates = [
+        mapping
+        for mapping in mappings.get(package, [])
+        if mapping["artifact"] == path
+        and mapping["derivation"] is not None
+        and mapping["derivation"].get("type") == "ajx-package-bundle"
+    ]
+    if not candidates:
+        return None
+    identities = {
+        (mapping["github_repository"], mapping["derivation"]["manifest"], tuple(mapping["source_roots"]))
+        for mapping in candidates
+    }
+    if len(identities) != 1:
+        raise ReleaseTextDiffError(f"Ambiguous Ajx package-bundle mapping for {package}:{path}")
+    return candidates[0]
+
+
+def source_baseline(mapping: dict, before_release: str, after_release: str, repository_cache: Path) -> tuple[Path, str]:
+    """Use the requested public baseline tag, or its closest public predecessor."""
+    if not isinstance(mapping["url"], str) or not mapping["url"]:
+        raise ReleaseTextDiffError(
+            f"Ajx package-bundle mapping for {mapping['github_repository']} has no upstream repository URL"
+        )
+    repository = MANUAL.ensure_repository(
+        mapping["url"], repository_cache / mapping["github_repository"].replace("/", "__")
+    )
+    tags = MANUAL.git_output(repository, "tag", "--list").splitlines()
+    if before_release in tags:
+        return repository, before_release
+    return repository, MANUAL.baseline_tag_for_release(repository, after_release)[0]
+
+
+def bundle_source_paths(mapping: dict, repository: Path, baseline: str) -> list[str]:
+    """Resolve the source modules listed by an Ajx package manifest at BASELINE."""
+    manifest = mapping["derivation"]["manifest"]
+    try:
+        contents = MANUAL.command(["git", "-C", str(repository), "show", f"{baseline}:{manifest}"]).stdout.decode("utf-8")
+    except (MANUAL.ExtractionError, UnicodeDecodeError) as error:
+        raise ReleaseTextDiffError(f"Could not read Ajx package manifest {manifest} at {baseline}: {error}") from error
+    modules = re.findall(r"AjxPackage\.require\(\s*[\"']([^\"']+)[\"']\s*\)", contents)
+    paths = []
+    for module in modules:
+        for source_root in mapping["source_roots"]:
+            package_name = PurePosixPath(source_root).name
+            if module != package_name and not module.startswith(package_name + "."):
+                continue
+            relative = module.split(".")[1:]
+            if not relative:
+                continue
+            paths.append((PurePosixPath(source_root) / ("/".join(relative) + ".js")).as_posix())
+    candidates = sorted(set(paths))
+    if not candidates:
+        raise ReleaseTextDiffError(f"Ajx package manifest {manifest} has no modules below the configured source roots")
+    return MANUAL.source_paths_at_tag(repository, baseline, candidates, mapping["source_roots"] and [".js"])
+
+
+def reconstruct_bundle_diff(
+    mapping: dict,
+    candidate: dict,
+    before_release: str,
+    after_release: str,
+    repository_cache: Path,
+) -> dict:
+    """Reconstruct source patches from uniquely matched before-side bundle hunks."""
+    repository, baseline = source_baseline(mapping, before_release, after_release, repository_cache)
+    sources = bundle_source_paths(mapping, repository, baseline)
+    baseline_sources = {source: MANUAL.source_lines_at_tag(repository, baseline, source) for source in sources}
+    package_patch = MANUAL.git_diff(
+        repository,
+        str(candidate["before_path"]),
+        "/dev/null" if candidate["after_path"] is None else str(candidate["after_path"]),
+        unified=3,
+        no_index=True,
+    )
+    replacements: dict[str, list[tuple[int, object]]] = {}
+    unmatched = []
+    for hunk in MANUAL.parse_hunks(package_patch):
+        matches = [
+            (source, offset)
+            for source, lines in baseline_sources.items()
+            for offset in MANUAL.hunk_occurrences(hunk, lines)
+        ]
+        if len(matches) != 1:
+            unmatched.append(
+                {
+                    "hunk": hunk.header,
+                    "reason": "ambiguous-baseline-before-side" if matches else "no-baseline-before-side-match",
+                    "candidates": [{"source": source, "source_line": offset + 1} for source, offset in matches],
+                }
+            )
+            continue
+        source, offset = matches[0]
+        previous = replacements.setdefault(source, [])
+        if any(offset < old_offset + len(old_hunk.before_lines) and old_offset < offset + len(hunk.before_lines) for old_offset, old_hunk in previous):
+            unmatched.append({"hunk": hunk.header, "reason": "overlapping-source-hunk-match", "source": source})
+            continue
+        previous.append((offset, hunk))
+    patches = []
+    matched_sources = []
+    for source, source_replacements in sorted(replacements.items()):
+        before_lines = baseline_sources[source]
+        after_lines = list(before_lines)
+        for offset, hunk in sorted(source_replacements, reverse=True):
+            after_lines[offset : offset + len(hunk.before_lines)] = hunk.after_lines
+        patches.append(MANUAL.source_patch(source, before_lines, tuple(after_lines)))
+        matched_sources.append(source)
+    return {
+        "baseline": baseline,
+        "manifest": mapping["derivation"]["manifest"],
+        "patch": b"".join(patches),
+        "sources": matched_sources,
+        "matched_hunks": sum(len(values) for values in replacements.values()),
+        "unmatched_hunks": unmatched,
+    }
+
+
 def generated_diff_filename(
     upstream: dict, after_release: str, sequences: dict[str, int], change_kind: str = "generated-changes"
 ) -> str:
@@ -497,6 +626,8 @@ def artifact_record(candidate: dict, output: Path) -> dict:
         "generated": candidate.get("generated"),
         "upstream_diff": candidate.get("upstream_diff"),
         "upstream_path": candidate.get("upstream_path"),
+        "upstream_paths": candidate.get("upstream_paths"),
+        "bundle_extraction": candidate.get("bundle_extraction"),
     }
 
 
@@ -506,6 +637,7 @@ def create_release_text_diffs(
     results: Path,
     output_root: Path | None = None,
     definitions: Path | None = None,
+    repository_cache: Path = Path("/work/release-text-diff-repositories"),
 ) -> Path:
     if not RELEASE_VERSION.fullmatch(before_or_after) or (after_release is not None and not RELEASE_VERSION.fullmatch(after_release)):
         raise ReleaseTextDiffError("Release labels must use numeric X.Y.Z form")
@@ -657,11 +789,16 @@ def create_release_text_diffs(
         upstream_groups: dict[tuple[str, str, str, str, str], list[dict]] = {}
         binary_only_candidates = []
         generated_candidates = []
+        bundle_candidates = []
         for candidate in text_candidates:
             mapping = candidate["root_source_mapping"] or candidate["direct_source_mapping"]
             if mapping is None:
                 if candidate["generated_mapping"] is not None:
                     generated_candidates.append(candidate)
+                    continue
+                bundle_mapping = bundle_mapping_for_artifact(configured_mappings, after.name, candidate["path"])
+                if bundle_mapping is not None:
+                    bundle_candidates.append((candidate, bundle_mapping))
                     continue
                 binary_only_candidates.append(candidate)
                 continue
@@ -708,6 +845,30 @@ def create_release_text_diffs(
             for candidate in candidates:
                 candidate["upstream_diff"] = relative_diff
             total_upstream_diffs += 1
+        for candidate, mapping in bundle_candidates:
+            extraction = reconstruct_bundle_diff(mapping, candidate, before_release, after_release, repository_cache)
+            candidate["bundle_extraction"] = {
+                "baseline": extraction["baseline"],
+                "manifest": extraction["manifest"],
+                "matched_hunks": extraction["matched_hunks"],
+                "unmatched_hunks": extraction["unmatched_hunks"],
+            }
+            if extraction["patch"]:
+                upstream = {
+                    "github_repository": mapping["github_repository"],
+                    "repository": mapping["repository"],
+                    "selection": "ajx-package-bundle",
+                }
+                diff = output / "upstream_diffs" / generated_diff_filename(
+                    upstream, after_release, upstream_sequences, "upstream-changes"
+                )
+                diff.parent.mkdir(parents=True, exist_ok=True)
+                diff.write_bytes(extraction["patch"])
+                candidate["upstream_diff"] = str(diff.relative_to(output))
+                candidate["upstream_paths"] = extraction["sources"]
+                total_upstream_diffs += 1
+            if extraction["unmatched_hunks"]:
+                binary_only_candidates.append(candidate)
         for candidate in generated_candidates:
             mapping = candidate["generated_mapping"]
             upstream = {
@@ -798,6 +959,7 @@ def main() -> int:
     parser.add_argument("--results-directory", type=Path, default=Path("/results"))
     parser.add_argument("--output-directory", type=Path, help="parent directory for the release-named diff folder")
     parser.add_argument("--definitions-directory", type=Path, default=ROOT.parent / "source-extractors")
+    parser.add_argument("--repository-cache", type=Path, default=Path("/work/release-text-diff-repositories"))
     arguments = parser.parse_args()
     try:
         output = create_release_text_diffs(
@@ -806,6 +968,7 @@ def main() -> int:
             arguments.results_directory,
             arguments.output_directory,
             arguments.definitions_directory,
+            arguments.repository_cache,
         )
     except (ReleaseTextDiffError, INSPECTOR.AnalysisError) as error:
         print(f"error: {error}", file=sys.stderr)
