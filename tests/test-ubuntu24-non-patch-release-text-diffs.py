@@ -373,9 +373,9 @@ with tempfile.TemporaryDirectory() as temporary_directory:
     }
     assert not list(output.rglob("*.bin.diff"))
     assert "generated.java" not in json.dumps(report)
-    diffs = list((output / "binary_packages_diffs").glob("*.diff"))
+    diffs = list((output / "original_binary_packages_diffs").glob("*.diff"))
     assert len(diffs) == 6
-    assert all(diff.parent == output / "binary_packages_diffs" for diff in diffs)
+    assert all(diff.parent == output / "original_binary_packages_diffs" for diff in diffs)
     assert {diff.name for diff in diffs} == {
         f"example-10.1.21-generated-changes_{number:03d}.diff"
         for number in range(1, 7)

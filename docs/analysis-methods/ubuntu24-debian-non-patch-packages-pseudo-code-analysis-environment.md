@@ -236,7 +236,7 @@ var/ubuntu24-debian-non-patch-packages-pseudo-code-analysis/results/
   release-text-diffs/10.1.21/
 ```
 
-`binary_packages_diffs/` contains every unified package-payload `.diff`,
+`original_binary_packages_diffs/` contains every unified package-payload `.diff`,
 including added and removed files. Source extractor mappings that define an
 `artifact-root` combine every changed text artifact below that directory into
 one diff; paths without such a mapping are combined when two or more changed

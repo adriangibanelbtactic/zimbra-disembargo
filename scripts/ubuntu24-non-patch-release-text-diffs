@@ -822,7 +822,7 @@ def create_release_text_diffs(
                 individual_candidates.extend(candidates)
                 del directory_candidates[group]
         for candidate in individual_candidates:
-            diff = output / "binary_packages_diffs" / generated_diff_filename(
+            diff = output / "original_binary_packages_diffs" / generated_diff_filename(
                 candidate["upstream"], after_release, binary_package_sequences
             )
             write_unified_diff(diff, candidate["path"], candidate["before_path"], candidate["after_path"])
@@ -834,7 +834,7 @@ def create_release_text_diffs(
                 "repository": repository,
                 "selection": selection,
             }
-            diff = output / "binary_packages_diffs" / generated_diff_filename(
+            diff = output / "original_binary_packages_diffs" / generated_diff_filename(
                 upstream, after_release, binary_package_sequences
             )
             write_directory_diff(diff, candidates)
