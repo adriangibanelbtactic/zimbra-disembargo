@@ -232,7 +232,31 @@ def source_extractor_mappings(definitions: Path) -> dict[str, list[dict]]:
                         raise ReleaseTextDiffError(
                             f"Source extractor definition {definition_path} ajx-package-bundle derivation is invalid"
                         )
-                    derivation = {"type": "ajx-package-bundle", "manifest": manifest.strip("/")}
+                    template_substitution = derivation.get("template-substitution")
+                    if template_substitution is not None:
+                        if not isinstance(template_substitution, dict):
+                            raise ReleaseTextDiffError(
+                                f"Source extractor definition {definition_path} Ajx template-substitution is invalid"
+                            )
+                        source = template_substitution.get("source")
+                        substitutions = template_substitution.get("substitutions")
+                        if not isinstance(source, str) or not source.strip("/") or not isinstance(substitutions, dict) or not substitutions:
+                            raise ReleaseTextDiffError(
+                                f"Source extractor definition {definition_path} Ajx template-substitution is invalid"
+                            )
+                        if not all(isinstance(token, str) and token and isinstance(description, str) and description for token, description in substitutions.items()):
+                            raise ReleaseTextDiffError(
+                                f"Source extractor definition {definition_path} Ajx template-substitution substitutions are invalid"
+                            )
+                        template_substitution = {
+                            "source": source.strip("/"),
+                            "substitutions": dict(sorted(substitutions.items())),
+                        }
+                    derivation = {
+                        "type": "ajx-package-bundle",
+                        "manifest": manifest.strip("/"),
+                        "template-substitution": template_substitution,
+                    }
             package_mappings.setdefault(package, []).append(
                 {
                     "github_repository": github_repository,
@@ -499,6 +523,28 @@ def bundle_source_paths(mapping: dict, repository: Path, baseline: str) -> list[
     return MANUAL.source_paths_at_tag(repository, baseline, candidates, mapping["source_roots"] and [".js"])
 
 
+def template_hunk_matches(hunk: object, source_lines: tuple[str, ...], substitutions: dict[str, str]) -> list[int]:
+    """Locate a package hunk in a template after allowing only declared tokens to vary."""
+    if not hunk.before_lines:
+        return []
+    matches = []
+    for start in range(len(source_lines) - len(hunk.before_lines) + 1):
+        expressions = []
+        for source_line in source_lines[start : start + len(hunk.before_lines)]:
+            expression = re.escape(source_line)
+            for token in substitutions:
+                expression = expression.replace(re.escape(token), r"[^\n]+")
+            expressions.append(re.compile(rf"^{expression}$"))
+        if all(expression.fullmatch(package_line) for expression, package_line in zip(expressions, hunk.before_lines)):
+            matches.append(start)
+    return matches
+
+
+def raw_hunk_patch(path: str, hunk: object) -> bytes:
+    """Render one installed-artifact hunk as generated-template evidence."""
+    return f"--- before/{path}\n+++ after/{path}\n{hunk.patch}".encode("utf-8")
+
+
 def reconstruct_bundle_diff(
     mapping: dict,
     candidate: dict,
@@ -519,6 +565,8 @@ def reconstruct_bundle_diff(
     )
     replacements: dict[str, list[tuple[int, object]]] = {}
     unmatched = []
+    generated_hunks = []
+    template_substitution = mapping["derivation"].get("template-substitution")
     for hunk in MANUAL.parse_hunks(package_patch):
         matches = [
             (source, offset)
@@ -526,6 +574,24 @@ def reconstruct_bundle_diff(
             for offset in MANUAL.hunk_occurrences(hunk, lines)
         ]
         if len(matches) != 1:
+            template_matches = []
+            if template_substitution is not None:
+                source = template_substitution["source"]
+                if source in baseline_sources:
+                    template_matches = template_hunk_matches(
+                        hunk, baseline_sources[source], template_substitution["substitutions"]
+                    )
+            if len(template_matches) == 1:
+                generated_hunks.append(
+                    {
+                        "hunk": hunk.header,
+                        "source": template_substitution["source"],
+                        "source_line": template_matches[0] + 1,
+                        "substitutions": template_substitution["substitutions"],
+                        "patch": raw_hunk_patch(candidate["path"], hunk),
+                    }
+                )
+                continue
             unmatched.append(
                 {
                     "hunk": hunk.header,
@@ -555,6 +621,7 @@ def reconstruct_bundle_diff(
         "patch": b"".join(patches),
         "sources": matched_sources,
         "matched_hunks": sum(len(values) for values in replacements.values()),
+        "generated_hunks": generated_hunks,
         "unmatched_hunks": unmatched,
     }
 
@@ -624,6 +691,8 @@ def artifact_record(candidate: dict, output: Path) -> dict:
         "generated_diff": candidate.get("generated_diff"),
         "template_diff": candidate.get("template_diff"),
         "generated": candidate.get("generated"),
+        "generated_hunk_diffs": candidate.get("generated_hunk_diffs"),
+        "template_hunk_diffs": candidate.get("template_hunk_diffs"),
         "upstream_diff": candidate.get("upstream_diff"),
         "upstream_path": candidate.get("upstream_path"),
         "upstream_paths": candidate.get("upstream_paths"),
@@ -851,6 +920,15 @@ def create_release_text_diffs(
                 "baseline": extraction["baseline"],
                 "manifest": extraction["manifest"],
                 "matched_hunks": extraction["matched_hunks"],
+                "generated_hunks": [
+                    {
+                        "hunk": hunk["hunk"],
+                        "source": hunk["source"],
+                        "source_line": hunk["source_line"],
+                        "substitutions": hunk["substitutions"],
+                    }
+                    for hunk in extraction["generated_hunks"]
+                ],
                 "unmatched_hunks": extraction["unmatched_hunks"],
             }
             if extraction["patch"]:
@@ -867,6 +945,26 @@ def create_release_text_diffs(
                 candidate["upstream_diff"] = str(diff.relative_to(output))
                 candidate["upstream_paths"] = extraction["sources"]
                 total_upstream_diffs += 1
+            for hunk in extraction["generated_hunks"]:
+                upstream = {
+                    "github_repository": mapping["github_repository"],
+                    "repository": mapping["repository"],
+                    "selection": "generated-template-hunk",
+                }
+                generated_diff = output / "generated_diffs" / generated_diff_filename(
+                    upstream, after_release, generated_sequences, "generated-template-substitution"
+                )
+                generated_diff.parent.mkdir(parents=True, exist_ok=True)
+                generated_diff.write_bytes(hunk["patch"])
+                template_diff = output / "template_diffs" / generated_diff_filename(
+                    upstream, after_release, template_sequences, "template-changes"
+                )
+                template_diff.parent.mkdir(parents=True, exist_ok=True)
+                template_diff.write_bytes(hunk["patch"])
+                candidate.setdefault("generated_hunk_diffs", []).append(str(generated_diff.relative_to(output)))
+                candidate.setdefault("template_hunk_diffs", []).append(str(template_diff.relative_to(output)))
+                total_generated_diffs += 1
+                total_template_diffs += 1
             if extraction["unmatched_hunks"]:
                 binary_only_candidates.append(candidate)
         for candidate in generated_candidates:

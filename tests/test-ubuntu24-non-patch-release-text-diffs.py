@@ -45,6 +45,18 @@ assert module.selected_releases(catalogue, "10.1.20", "10.1.21") == ("10.1.20", 
 assert module.is_text_mime("text/plain")
 assert module.is_text_mime("application/javascript")
 assert not module.is_text_mime("application/octet-stream")
+template_hunk = module.MANUAL.Hunk(
+    "@@ -1 +1 @@",
+    ('defaultValue:"20260707-0941"\n',),
+    ('defaultValue:"20260916-0520"\n',),
+    '@@ -1 +1 @@\n-defaultValue:"20260707-0941"\n+defaultValue:"20260916-0520"\n',
+)
+assert module.template_hunk_matches(
+    template_hunk,
+    ('defaultValue:"@buildDateTime@"\n',),
+    {"@buildDateTime@": "release-specific build date"},
+) == [0]
+assert b"--- before/example.js" in module.raw_hunk_patch("example.js", template_hunk)
 project_mappings = module.source_extractor_mappings(ROOT / "source-extractors")
 for generated_artifact in (
     "opt/zimbra/jetty_base/etc/zimbra.web.xml.in",
