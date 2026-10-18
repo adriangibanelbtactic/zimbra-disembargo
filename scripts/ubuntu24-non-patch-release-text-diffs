@@ -688,10 +688,8 @@ def artifact_record(candidate: dict, output: Path) -> dict:
         "upstream": candidate["upstream"],
         "binary_package_diff": candidate["binary_package_diff"],
         "binary_only_diff": candidate.get("binary_only_diff"),
-        "generated_diff": candidate.get("generated_diff"),
         "template_diff": candidate.get("template_diff"),
         "generated": candidate.get("generated"),
-        "generated_hunk_diffs": candidate.get("generated_hunk_diffs"),
         "template_hunk_diffs": candidate.get("template_hunk_diffs"),
         "upstream_diff": candidate.get("upstream_diff"),
         "upstream_path": candidate.get("upstream_path"),
@@ -739,13 +737,11 @@ def create_release_text_diffs(
     total_text_artifacts = 0
     total_binary_package_diffs = 0
     total_binary_only_diffs = 0
-    total_generated_diffs = 0
     total_template_diffs = 0
     total_upstream_diffs = 0
     total_excluded_by_filters = 0
     binary_package_sequences: dict[str, int] = {}
     binary_only_sequences: dict[str, int] = {}
-    generated_sequences: dict[str, int] = {}
     template_sequences: dict[str, int] = {}
     upstream_sequences: dict[str, int] = {}
     for before, after in comparisons:
@@ -951,19 +947,12 @@ def create_release_text_diffs(
                     "repository": mapping["repository"],
                     "selection": "generated-template-hunk",
                 }
-                generated_diff = output / "generated_diffs" / generated_diff_filename(
-                    upstream, after_release, generated_sequences, "generated-template-substitution"
-                )
-                generated_diff.parent.mkdir(parents=True, exist_ok=True)
-                generated_diff.write_bytes(hunk["patch"])
                 template_diff = output / "template_diffs" / generated_diff_filename(
                     upstream, after_release, template_sequences, "template-changes"
                 )
                 template_diff.parent.mkdir(parents=True, exist_ok=True)
                 template_diff.write_bytes(hunk["patch"])
-                candidate.setdefault("generated_hunk_diffs", []).append(str(generated_diff.relative_to(output)))
                 candidate.setdefault("template_hunk_diffs", []).append(str(template_diff.relative_to(output)))
-                total_generated_diffs += 1
                 total_template_diffs += 1
             if extraction["unmatched_hunks"]:
                 binary_only_candidates.append(candidate)
@@ -974,16 +963,10 @@ def create_release_text_diffs(
                 "repository": mapping["repository"],
                 "selection": "generated-artifact",
             }
-            diff = output / "generated_diffs" / generated_diff_filename(
-                upstream, after_release, generated_sequences, "generated-template-substitution"
-            )
-            write_unified_diff(diff, candidate["path"], candidate["before_path"], candidate["after_path"])
             template_diff = output / "template_diffs" / generated_diff_filename(
                 upstream, after_release, template_sequences, "template-changes"
             )
-            template_diff.parent.mkdir(parents=True, exist_ok=True)
-            template_diff.write_bytes(diff.read_bytes())
-            candidate["generated_diff"] = str(diff.relative_to(output))
+            write_unified_diff(template_diff, candidate["path"], candidate["before_path"], candidate["after_path"])
             candidate["template_diff"] = str(template_diff.relative_to(output))
             candidate["generated"] = {
                 "type": mapping["derivation"]["type"],
@@ -991,7 +974,6 @@ def create_release_text_diffs(
                 "substitutions": mapping["derivation"].get("substitutions"),
                 "reason": "package template substitution; not an upstream source patch",
             }
-            total_generated_diffs += 1
             total_template_diffs += 1
         for candidate in binary_only_candidates:
             diff = output / "binary_only_diffs" / generated_diff_filename(
@@ -1035,7 +1017,6 @@ def create_release_text_diffs(
                 "text_artifacts": total_text_artifacts,
                 "binary_package_diffs": total_binary_package_diffs,
                 "binary_only_diffs": total_binary_only_diffs,
-                "generated_diffs": total_generated_diffs,
                 "template_diffs": total_template_diffs,
                 "upstream_diffs": total_upstream_diffs,
                 "excluded_by_source_extractor_filters": total_excluded_by_filters,

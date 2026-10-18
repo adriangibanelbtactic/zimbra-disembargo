@@ -257,14 +257,14 @@ artifact filename is appended to its configured source root. For example,
 file is used directly. This is the patch-ready representation for that upstream
 repository.
 
-`generated_diffs/` contains raw installed-path evidence for an explicitly
-declared `template-substitution` derivation. These changes are not rewritten as
-an upstream patch: the package contains a build-substituted value while the
-public baseline contains the declared source-template token. The artifact record
-names that source template, the token(s), and its generated-only classification.
-The same raw evidence is copied to `template_diffs/` with a
-`*-template-changes_###.diff` filename, so template-derived changes can be
-reviewed independently without treating them as upstream patches.
+`template_diffs/` contains raw installed-path evidence for an explicitly
+declared `template-substitution` derivation, including matching hunks found in
+an Ajx bundle. These changes are not rewritten as upstream patches: the package
+contains a build-substituted value while the public baseline contains the
+declared source-template token. The artifact record names that source template,
+the token(s), and its generated-only classification. The
+`*-template-changes_###.diff` files are the sole template-substitution evidence;
+there is no duplicate `generated_diffs/` representation.
 
 `binary_only_diffs/` contains one raw installed-path diff for every remaining
 text artifact that has no applicable deterministic mapping. This includes direct
@@ -274,7 +274,6 @@ artifact-root-only mappings, and unmapped package artifacts.
 Each filename encodes the mapped upstream GitHub repository, target release,
 representation, and a zero-padded sequence. For example,
 `binary_only_diffs/zm-web-client-10.1.21-orphan-changes_001.diff`,
-`generated_diffs/zm-web-client-10.1.21-generated-template-substitution_001.diff`,
 `template_diffs/zm-web-client-10.1.21-template-changes_001.diff`, and
 `upstream_diffs/zm-web-client-10.1.21-upstream-changes_001.diff` cannot share a
 basename even when they describe the same component. Exact package builds,

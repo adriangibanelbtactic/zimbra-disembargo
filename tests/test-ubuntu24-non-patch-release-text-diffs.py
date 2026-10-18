@@ -355,7 +355,6 @@ with tempfile.TemporaryDirectory() as temporary_directory:
     assert manifest["text_artifacts"] == 14
     assert manifest["binary_package_diffs"] == 6
     assert manifest["binary_only_diffs"] == 4
-    assert manifest["generated_diffs"] == 2
     assert manifest["template_diffs"] == 2
     assert manifest["upstream_diffs"] == 4
     assert manifest["excluded_by_source_extractor_filters"] == 2
@@ -408,16 +407,15 @@ with tempfile.TemporaryDirectory() as temporary_directory:
     assert artifacts_by_path["etc/individual.txt"]["upstream_diff"] is not None
     assert artifacts_by_path["etc/individual.txt"]["binary_only_diff"] is None
     generated = artifacts_by_path["etc/generated.xml"]
-    assert generated["generated_diff"] is not None
     assert generated["template_diff"] is not None
     assert generated["binary_only_diff"] is None
     assert generated["upstream_diff"] is None
     assert generated["generated"]["source"] == "WebRoot/WEB-INF/web.xml"
-    assert len(list((output / "generated_diffs").glob("*.diff"))) == 2
     template_diffs = list((output / "template_diffs").glob("*.diff"))
     assert len(template_diffs) == 2
     assert all("-template-changes_" in diff.name for diff in template_diffs)
-    assert (output / generated["generated_diff"]).read_bytes() == (output / generated["template_diff"]).read_bytes()
+    assert "generated_diff" not in generated
+    assert not (output / "generated_diffs").exists()
     assert len(list((output / "binary_only_diffs").glob("*.diff"))) == 4
     assert all("-orphan-changes_" in diff.name for diff in (output / "binary_only_diffs").glob("*.diff"))
     assert all("-upstream-changes_" in diff.name for diff in (output / "upstream_diffs").glob("*.diff"))
