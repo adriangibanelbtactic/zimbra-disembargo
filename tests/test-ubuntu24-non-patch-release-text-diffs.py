@@ -101,6 +101,13 @@ startup_mapping = module.bundle_mapping_for_artifact(
 assert startup_mapping is not None
 assert startup_mapping["derivation"]["manifest"] == "WebRoot/js/zimbraMail/package/Startup1_2.js"
 assert startup_mapping["derivation"]["template-substitution"]["source"] == "WebRoot/js/zimbraMail/share/model/ZmSettings.js"
+tasks_mapping = module.bundle_mapping_for_artifact(
+    project_mappings,
+    "zimbra-mbox-webclient-war",
+    "opt/zimbra/jetty_base/webapps/zimbra/js/Tasks_all.js",
+)
+assert tasks_mapping is not None
+assert tasks_mapping["derivation"]["manifest"] == "WebRoot/js/zimbraMail/package/Tasks.js"
 assert module.upstream_for_artifact(
     project_mappings,
     "zimbra-mbox-webclient-war",
