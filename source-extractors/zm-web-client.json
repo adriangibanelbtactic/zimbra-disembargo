@@ -86,6 +86,25 @@
     },
     {
       "package": "zimbra-mbox-webclient-war",
+      "artifact": "opt/zimbra/jetty_base/webapps/zimbra/js/zimbraMail/share/model/ZmSettings.js",
+      "source-roots": [
+        "WebRoot/js/zimbraMail/share/model"
+      ],
+      "source-suffixes": [
+        ".js"
+      ],
+      "derivation": {
+        "type": "template-substitution",
+        "source": "WebRoot/js/zimbraMail/share/model/ZmSettings.js",
+        "substitutions": {
+          "@buildDateTime@": "release-specific client build date and time",
+          "@buildRelease@": "release-specific client build release",
+          "@buildVersion@": "release-specific client build version"
+        }
+      }
+    },
+    {
+      "package": "zimbra-mbox-webclient-war",
       "artifact": "opt/zimbra/jetty_base/etc/zimbra.web.xml.in",
       "source-roots": [
         "WebRoot/WEB-INF"
