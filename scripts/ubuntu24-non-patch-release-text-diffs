@@ -1,0 +1,1202 @@
+#!/usr/bin/env python3
+"""Write text-only payload diffs for all retained non-patch package builds in a release pair."""
+import argparse
+import fnmatch
+import importlib.machinery
+import importlib.util
+import json
+import re
+import subprocess
+import sys
+from pathlib import Path, PurePosixPath
+from types import ModuleType
+
+
+class ReleaseTextDiffError(Exception):
+    """A release-pair selection or text-diff generation failed."""
+
+
+def load_script(name: str, path: Path) -> ModuleType:
+    loader = importlib.machinery.SourceFileLoader(name, str(path))
+    specification = importlib.util.spec_from_loader(name, loader)
+    if specification is None:
+        raise RuntimeError(f"Could not load {path}")
+    module = importlib.util.module_from_spec(specification)
+    sys.modules[name] = module
+    loader.exec_module(module)
+    return module
+
+
+ROOT = Path(__file__).resolve().parent
+INSPECTOR = load_script("ubuntu24_deb_non_patch_package_inspect", ROOT / "ubuntu24-deb-non-patch-package-inspect")
+MANUAL = load_script("ubuntu24_source_extract_manual", ROOT / "ubuntu24-source-extract-manual")
+RELEASE_VERSION = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
+TEXT_MIME_TYPES = {
+    "application/javascript",
+    "application/json",
+    "application/x-httpd-php",
+    "application/x-javascript",
+    "application/xml",
+}
+
+
+def packages_for_release(packages: dict, package_name: str, release: str) -> list:
+    """Return all package builds whose Debian version belongs to RELEASE."""
+    prefix = re.compile(rf"^{re.escape(release)}(?:[.-]|$)")
+    return [package for package in packages.get(package_name, []) if prefix.match(package.version)]
+
+
+def previous_release(packages: dict, after_release: str) -> str:
+    """Find the highest retained numeric release label below AFTER_RELEASE."""
+    target = tuple(int(part) for part in after_release.split("."))
+    labels = set()
+    for versions in packages.values():
+        for package in versions:
+            match = re.match(r"^([0-9]+\.[0-9]+\.[0-9]+)(?:[.-]|$)", package.version)
+            if match:
+                labels.add(match.group(1))
+    earlier = [label for label in labels if tuple(int(part) for part in label.split(".")) < target]
+    if not earlier:
+        raise ReleaseTextDiffError(f"No retained release before {after_release} is available in the non-patch catalogue")
+    return max(earlier, key=lambda label: tuple(int(part) for part in label.split(".")))
+
+
+def selected_releases(packages: dict, before_or_after: str, after_release: str | None) -> tuple[str, str]:
+    """Return an explicit pair or resolve the nearest retained earlier release."""
+    if after_release is not None:
+        return before_or_after, after_release
+    return previous_release(packages, before_or_after), before_or_after
+
+
+def release_comparisons(packages: dict, before_release: str, after_release: str) -> tuple[list[tuple], list[dict]]:
+    """Pair every target-release build with the newest exact baseline-release build.
+
+    A package absent from the requested baseline is retained in ``skipped`` rather
+    than silently being compared with a different release.  This keeps a release
+    report an exact before/after comparison.
+    """
+    comparisons = []
+    skipped = []
+    for package_name, versions in packages.items():
+        after_versions = packages_for_release(packages, package_name, after_release)
+        if not after_versions:
+            continue
+        before_versions = packages_for_release(packages, package_name, before_release)
+        if not before_versions:
+            skipped.append(
+                {
+                    "package": package_name,
+                    "after_versions": [package.version for package in after_versions],
+                    "reason": f"no retained build for requested before release {before_release}",
+                }
+            )
+            continue
+        before = before_versions[-1]
+        for after in after_versions:
+            if INSPECTOR.compare_versions(before, after) >= 0:
+                skipped.append(
+                    {
+                        "package": package_name,
+                        "before_version": before.version,
+                        "after_version": after.version,
+                        "reason": "before build is not older than after build",
+                    }
+                )
+                continue
+            comparisons.append((before, after))
+    return comparisons, skipped
+
+
+def changed_artifacts(before: dict, after: dict) -> list[tuple[str, object | None, object | None]]:
+    """Return modified, added, and removed regular payload artifacts."""
+    changed = []
+    for path in sorted(before.keys() | after.keys()):
+        before_artifact = before.get(path)
+        after_artifact = after.get(path)
+        if before_artifact and after_artifact and before_artifact.md5 == after_artifact.md5:
+            continue
+        if before_artifact and after_artifact:
+            change = "modified"
+        elif before_artifact:
+            change = "removed"
+        else:
+            change = "added"
+        changed.append((change, before_artifact, after_artifact))
+    return changed
+
+
+def mime_type(path: Path) -> str:
+    try:
+        completed = subprocess.run(
+            ["file", "--brief", "--mime-type", "--", str(path)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise ReleaseTextDiffError(f"Could not identify MIME type for {path}: {error}") from error
+    return completed.stdout.strip()
+
+
+def is_text_mime(value: str) -> bool:
+    return value.startswith("text/") or value in TEXT_MIME_TYPES
+
+
+def artifact_is_text(before_path: Path | None, after_path: Path | None) -> tuple[bool, str | None, str | None]:
+    """Accept a common artifact only when both sides are text.
+
+    For an added or removed path, the one available side determines whether the
+    change is textual.
+    """
+    before_mime = mime_type(before_path) if before_path is not None else None
+    after_mime = mime_type(after_path) if after_path is not None else None
+    return (
+        (before_mime is None or is_text_mime(before_mime))
+        and (after_mime is None or is_text_mime(after_mime)),
+        before_mime,
+        after_mime,
+    )
+
+
+def unique_directory(path: Path) -> Path:
+    candidate = path
+    suffix = 2
+    while candidate.exists():
+        candidate = path.with_name(f"{path.name}-{suffix}")
+        suffix += 1
+    candidate.mkdir(parents=True)
+    return candidate
+
+
+def source_extractor_mappings(definitions: Path) -> dict[str, list[dict]]:
+    """Read package-to-upstream mappings from source extractor definitions."""
+    if not definitions.is_dir():
+        raise ReleaseTextDiffError(f"Source extractor definitions directory does not exist: {definitions}")
+    package_mappings: dict[str, list[dict]] = {}
+    for definition_path in sorted(definitions.glob("*.json")):
+        try:
+            definition = json.loads(definition_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise ReleaseTextDiffError(f"Could not read source extractor definition {definition_path}: {error}") from error
+        upstream = definition.get("upstream")
+        github_repository = upstream.get("github_repository") if isinstance(upstream, dict) else None
+        upstream_url = upstream.get("url") if isinstance(upstream, dict) else None
+        if not isinstance(github_repository, str) or github_repository.count("/") != 1:
+            raise ReleaseTextDiffError(f"Source extractor definition {definition_path} has an invalid upstream GitHub repository")
+        repository = github_repository.rsplit("/", 1)[1]
+        mappings = definition.get("mappings")
+        if not isinstance(mappings, list):
+            raise ReleaseTextDiffError(f"Source extractor definition {definition_path} has an invalid mappings list")
+        for mapping in mappings:
+            if not isinstance(mapping, dict):
+                raise ReleaseTextDiffError(f"Source extractor definition {definition_path} has an invalid mapping")
+            package = mapping.get("package")
+            artifact = mapping.get("artifact")
+            root = mapping.get("artifact-root")
+            source_root = mapping.get("source-root")
+            source_roots = mapping.get("source-roots")
+            derivation = mapping.get("derivation")
+            deduplication = MANUAL.upstream_deduplication(
+                mapping.get("upstream-deduplication"),
+                f"Source extractor definition {definition_path} mapping upstream-deduplication",
+            )
+            if not isinstance(package, str) or not package or (artifact is not None and not isinstance(artifact, str)) or (root is not None and not isinstance(root, str)) or (source_root is not None and not isinstance(source_root, str)):
+                raise ReleaseTextDiffError(f"Source extractor definition {definition_path} has an invalid package artifact mapping")
+            if artifact is None and (root is None or not root.strip("/")):
+                raise ReleaseTextDiffError(f"Source extractor definition {definition_path} mapping has no artifact or artifact-root")
+            if source_root is not None and not source_root.strip("/"):
+                raise ReleaseTextDiffError(f"Source extractor definition {definition_path} mapping has an empty source-root")
+            if source_roots is not None and (
+                not isinstance(source_roots, list)
+                or not all(isinstance(item, str) and item.strip("/") for item in source_roots)
+            ):
+                raise ReleaseTextDiffError(f"Source extractor definition {definition_path} mapping has an invalid source-roots list")
+            if derivation is not None:
+                if not isinstance(derivation, dict) or not isinstance(derivation.get("type"), str):
+                    raise ReleaseTextDiffError(f"Source extractor definition {definition_path} mapping has an invalid derivation")
+                if derivation["type"] == "template-substitution":
+                    source = derivation.get("source")
+                    substitutions = derivation.get("substitutions")
+                    if not isinstance(source, str) or not source.strip("/") or not isinstance(substitutions, dict) or not substitutions:
+                        raise ReleaseTextDiffError(
+                            f"Source extractor definition {definition_path} template-substitution derivation is invalid"
+                        )
+                    if not all(isinstance(token, str) and token and isinstance(description, str) and description for token, description in substitutions.items()):
+                        raise ReleaseTextDiffError(
+                            f"Source extractor definition {definition_path} template-substitution substitutions are invalid"
+                        )
+                    derivation = {
+                        "type": "template-substitution",
+                        "source": source.strip("/"),
+                        "substitutions": dict(sorted(substitutions.items())),
+                    }
+                elif derivation["type"] == "ajx-package-bundle":
+                    manifest = derivation.get("manifest")
+                    if not isinstance(manifest, str) or not manifest.strip("/"):
+                        raise ReleaseTextDiffError(
+                            f"Source extractor definition {definition_path} ajx-package-bundle derivation is invalid"
+                        )
+                    template_substitution = derivation.get("template-substitution")
+                    if template_substitution is not None:
+                        if not isinstance(template_substitution, dict):
+                            raise ReleaseTextDiffError(
+                                f"Source extractor definition {definition_path} Ajx template-substitution is invalid"
+                            )
+                        source = template_substitution.get("source")
+                        substitutions = template_substitution.get("substitutions")
+                        if not isinstance(source, str) or not source.strip("/") or not isinstance(substitutions, dict) or not substitutions:
+                            raise ReleaseTextDiffError(
+                                f"Source extractor definition {definition_path} Ajx template-substitution is invalid"
+                            )
+                        if not all(isinstance(token, str) and token and isinstance(description, str) and description for token, description in substitutions.items()):
+                            raise ReleaseTextDiffError(
+                                f"Source extractor definition {definition_path} Ajx template-substitution substitutions are invalid"
+                            )
+                        template_substitution = {
+                            "source": source.strip("/"),
+                            "substitutions": dict(sorted(substitutions.items())),
+                        }
+                    derivation = {
+                        "type": "ajx-package-bundle",
+                        "manifest": manifest.strip("/"),
+                        "template-substitution": template_substitution,
+                    }
+            package_mappings.setdefault(package, []).append(
+                {
+                    "github_repository": github_repository,
+                    "url": upstream_url,
+                    "repository": repository,
+                    "artifact": artifact.strip("/") if isinstance(artifact, str) else None,
+                    "artifact_root": root.strip("/") if isinstance(root, str) else None,
+                    "source_root": source_root.strip("/") if isinstance(source_root, str) else None,
+                    "source_roots": [item.strip("/") for item in source_roots] if isinstance(source_roots, list) else [],
+                    "derivation": derivation,
+                    "upstream_deduplication": deduplication,
+                }
+            )
+    return package_mappings
+
+
+def artifact_roots(definitions: Path) -> dict[str, list[str]]:
+    """Return configured artifact roots, retained for directory-diff grouping."""
+    roots: dict[str, set[str]] = {}
+    for package, mappings in source_extractor_mappings(definitions).items():
+        for mapping in mappings:
+            if mapping["artifact_root"]:
+                roots.setdefault(package, set()).add(mapping["artifact_root"])
+    return {package: sorted(package_roots, key=lambda root: (-len(root), root)) for package, package_roots in roots.items()}
+
+
+def shared_negative_filters(definitions: Path) -> list[str]:
+    """Return filters declared by every source extractor definition.
+
+    A filter common to every definition is a repository-wide rule rather than a
+    component-specific source scope.  Applying it here keeps release text-diff
+    output aligned with the extractor rules without hard-coding suffixes.
+    """
+    if not definitions.is_dir():
+        raise ReleaseTextDiffError(f"Source extractor definitions directory does not exist: {definitions}")
+    filters = []
+    for definition_path in sorted(definitions.glob("*.json")):
+        try:
+            definition = json.loads(definition_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise ReleaseTextDiffError(f"Could not read source extractor definition {definition_path}: {error}") from error
+        negative = definition.get("filter-negative")
+        if not isinstance(negative, list) or not all(isinstance(item, str) and item for item in negative):
+            raise ReleaseTextDiffError(f"Source extractor definition {definition_path} has an invalid filter-negative list")
+        filters.append(set(negative))
+    if not filters:
+        raise ReleaseTextDiffError(f"No source extractor definitions found in {definitions}")
+    return sorted(set.intersection(*filters))
+
+
+def path_matches_filter(path: str, pattern: str) -> bool:
+    """Match source-extractor suffix filters and filename glob filters."""
+    if any(character in pattern for character in "*?["):
+        return fnmatch.fnmatchcase(PurePosixPath(path).name, pattern)
+    return path.endswith(pattern)
+
+
+def artifact_root_for_path(roots: dict[str, list[str]], package: str, path: str) -> str | None:
+    """Return the most-specific configured artifact directory containing PATH."""
+    return next((root for root in roots.get(package, []) if path == root or path.startswith(root + "/")), None)
+
+
+def upstream_for_artifact(mappings: dict[str, list[dict]], package: str, path: str) -> dict:
+    """Associate an installed artifact with the most specific known upstream repo.
+
+    Exact artifact mappings take precedence, followed by the longest matching
+    artifact root.  A package with multiple component extractors otherwise uses
+    the repository with the most mappings; this makes its primary component the
+    stable default while preserving the mapping basis in the report.
+    """
+    candidates = mappings.get(package, [])
+    exact = [mapping for mapping in candidates if mapping["artifact"] == path]
+    roots = [
+        mapping
+        for mapping in candidates
+        if mapping["artifact_root"] and (path == mapping["artifact_root"] or path.startswith(mapping["artifact_root"] + "/"))
+    ]
+    selected = exact
+    selection = "exact-artifact"
+    if not selected and roots:
+        longest = max(len(mapping["artifact_root"]) for mapping in roots)
+        selected = [mapping for mapping in roots if len(mapping["artifact_root"]) == longest]
+        selection = "artifact-root"
+    if not selected and candidates:
+        frequencies: dict[str, int] = {}
+        for mapping in candidates:
+            frequencies[mapping["github_repository"]] = frequencies.get(mapping["github_repository"], 0) + 1
+        primary = min(frequencies, key=lambda repository: (-frequencies[repository], repository))
+        selected = [mapping for mapping in candidates if mapping["github_repository"] == primary]
+        selection = "package-primary"
+    if not selected:
+        return {
+            "github_repository": None,
+            "repository": f"unmapped-{package}",
+            "selection": "no-source-extractor-mapping",
+        }
+    repositories = {mapping["github_repository"] for mapping in selected}
+    if len(repositories) != 1:
+        raise ReleaseTextDiffError(f"Ambiguous upstream mapping for {package}:{path}: {', '.join(sorted(repositories))}")
+    mapping = selected[0]
+    return {
+        "github_repository": mapping["github_repository"],
+        "repository": mapping["repository"],
+        "selection": selection,
+    }
+
+
+def root_source_mapping_for_artifact(mappings: dict[str, list[dict]], package: str, path: str) -> dict | None:
+    """Return the most-specific one-to-one artifact-root/source-root mapping.
+
+    A directory mapping gives a deterministic installed-path to upstream-path
+    substitution for every artifact below that root.
+    """
+    candidates = [
+        mapping
+        for mapping in mappings.get(package, [])
+        if mapping["artifact_root"]
+        and mapping["source_root"]
+        and (path == mapping["artifact_root"] or path.startswith(mapping["artifact_root"] + "/"))
+    ]
+    if not candidates:
+        return None
+    longest = max(len(mapping["artifact_root"]) for mapping in candidates)
+    selected = [mapping for mapping in candidates if len(mapping["artifact_root"]) == longest]
+    identities = {
+        (mapping["github_repository"], mapping["artifact_root"], mapping["source_root"])
+        for mapping in selected
+    }
+    if len(identities) != 1:
+        raise ReleaseTextDiffError(
+            f"Ambiguous artifact-root/source-root mapping for {package}:{path}"
+        )
+    return selected[0]
+
+
+def upstream_path_for_artifact(mapping: dict, path: str) -> str:
+    """Translate PATH below a configured artifact root to its upstream path."""
+    try:
+        relative = PurePosixPath(path).relative_to(mapping["artifact_root"])
+    except ValueError as error:
+        raise ReleaseTextDiffError(f"Artifact {path} is outside configured root {mapping['artifact_root']}") from error
+    return (PurePosixPath(mapping["source_root"]) / relative).as_posix()
+
+
+def direct_source_mapping_for_artifact(mappings: dict[str, list[dict]], package: str, path: str) -> dict | None:
+    """Return an unambiguous direct-artifact source-root substitution.
+
+    A direct artifact can be a generated bundle, so mappings with ``derivation``
+    remain in ``binary_only_diffs``. For an ordinary direct artifact, its
+    installed directory is packaging-specific and is deliberately discarded:
+    the upstream path is its configured source root plus the artifact filename.
+    A source root whose basename is already that filename denotes the complete
+    upstream path, as used by the ``Resources.jsp`` mapping.
+    """
+    candidates = [
+        mapping
+        for mapping in mappings.get(package, [])
+        if mapping["artifact"] == path and mapping["source_roots"] and mapping["derivation"] is None
+    ]
+    if not candidates:
+        return None
+    filename = PurePosixPath(path).name
+    resolved = []
+    for mapping in candidates:
+        for source_root in mapping["source_roots"]:
+            source = PurePosixPath(source_root)
+            upstream_path = source.as_posix() if source.name == filename else (source / filename).as_posix()
+            resolved.append((mapping, source_root, upstream_path))
+    identities = {
+        (mapping["github_repository"], mapping["repository"], source_root, upstream_path)
+        for mapping, source_root, upstream_path in resolved
+    }
+    if len(identities) != 1:
+        raise ReleaseTextDiffError(f"Ambiguous direct artifact/source-roots mapping for {package}:{path}")
+    mapping, source_root, upstream_path = resolved[0]
+    return {**mapping, "source_root": source_root, "upstream_path": upstream_path}
+
+
+def generated_mapping_for_artifact(mappings: dict[str, list[dict]], package: str, path: str) -> dict | None:
+    """Return one explicit generated-artifact mapping, never an upstream patch mapping.
+
+    Template substitution changes package bytes without changing the public source
+    template. They are retained as generated evidence, rather than fabricating a
+    non-applicable diff against that template.
+    """
+    candidates = [
+        mapping
+        for mapping in mappings.get(package, [])
+        if mapping["artifact"] == path
+        and mapping["derivation"] is not None
+        and mapping["derivation"].get("type") == "template-substitution"
+    ]
+    if not candidates:
+        return None
+    identities = {
+        (
+            mapping["github_repository"],
+            mapping["repository"],
+            mapping["derivation"]["type"],
+            mapping["derivation"].get("source"),
+        )
+        for mapping in candidates
+    }
+    if len(identities) != 1:
+        raise ReleaseTextDiffError(f"Ambiguous generated-artifact mapping for {package}:{path}")
+    return candidates[0]
+
+
+def bundle_mapping_for_artifact(mappings: dict[str, list[dict]], package: str, path: str) -> dict | None:
+    """Return one exact Ajx package-bundle mapping for PATH."""
+    candidates = [
+        mapping
+        for mapping in mappings.get(package, [])
+        if mapping["artifact"] == path
+        and mapping["derivation"] is not None
+        and mapping["derivation"].get("type") == "ajx-package-bundle"
+    ]
+    if not candidates:
+        return None
+    identities = {
+        (mapping["github_repository"], mapping["derivation"]["manifest"], tuple(mapping["source_roots"]))
+        for mapping in candidates
+    }
+    if len(identities) != 1:
+        raise ReleaseTextDiffError(f"Ambiguous Ajx package-bundle mapping for {package}:{path}")
+    return candidates[0]
+
+
+def source_baseline(mapping: dict, before_release: str, after_release: str, repository_cache: Path) -> tuple[Path, str]:
+    """Use the requested public baseline tag, or its closest public predecessor."""
+    if not isinstance(mapping["url"], str) or not mapping["url"]:
+        raise ReleaseTextDiffError(
+            f"Ajx package-bundle mapping for {mapping['github_repository']} has no upstream repository URL"
+        )
+    repository = MANUAL.ensure_repository(
+        mapping["url"], repository_cache / mapping["github_repository"].replace("/", "__")
+    )
+    tags = MANUAL.git_output(repository, "tag", "--list").splitlines()
+    if before_release in tags:
+        return repository, before_release
+    return repository, MANUAL.baseline_tag_for_release(repository, after_release)[0]
+
+
+def bundle_source_paths(mapping: dict, repository: Path, baseline: str) -> list[str]:
+    """Resolve the source modules listed by an Ajx package manifest at BASELINE."""
+    manifest = mapping["derivation"]["manifest"]
+    try:
+        contents = MANUAL.command(["git", "-C", str(repository), "show", f"{baseline}:{manifest}"]).stdout.decode("utf-8")
+    except (MANUAL.ExtractionError, UnicodeDecodeError) as error:
+        raise ReleaseTextDiffError(f"Could not read Ajx package manifest {manifest} at {baseline}: {error}") from error
+    modules = re.findall(r"AjxPackage\.require\(\s*[\"']([^\"']+)[\"']\s*\)", contents)
+    paths = []
+    for module in modules:
+        for source_root in mapping["source_roots"]:
+            package_name = PurePosixPath(source_root).name
+            if module != package_name and not module.startswith(package_name + "."):
+                continue
+            relative = module.split(".")[1:]
+            if not relative:
+                continue
+            paths.append((PurePosixPath(source_root) / ("/".join(relative) + ".js")).as_posix())
+    candidates = sorted(set(paths))
+    if not candidates:
+        raise ReleaseTextDiffError(f"Ajx package manifest {manifest} has no modules below the configured source roots")
+    return MANUAL.source_paths_at_tag(repository, baseline, candidates, mapping["source_roots"] and [".js"])
+
+
+def template_hunk_matches(hunk: object, source_lines: tuple[str, ...], substitutions: dict[str, str]) -> list[int]:
+    """Locate a package hunk in a template after allowing only declared tokens to vary."""
+    if not hunk.before_lines:
+        return []
+    matches = []
+    for start in range(len(source_lines) - len(hunk.before_lines) + 1):
+        expressions = []
+        for source_line in source_lines[start : start + len(hunk.before_lines)]:
+            expression = re.escape(source_line)
+            for token in substitutions:
+                expression = expression.replace(re.escape(token), r"[^\n]+")
+            expressions.append(re.compile(rf"^{expression}$"))
+        if all(expression.fullmatch(package_line) for expression, package_line in zip(expressions, hunk.before_lines)):
+            matches.append(start)
+    return matches
+
+
+def raw_hunk_patch(path: str, hunk: object) -> bytes:
+    """Render one installed-artifact hunk as generated-template evidence."""
+    return f"--- before/{path}\n+++ after/{path}\n{hunk.patch}".encode("utf-8")
+
+
+def reconstruct_bundle_diff(
+    mapping: dict,
+    candidate: dict,
+    before_release: str,
+    after_release: str,
+    repository_cache: Path,
+) -> dict:
+    """Reconstruct source patches from uniquely matched before-side bundle hunks."""
+    repository, baseline = source_baseline(mapping, before_release, after_release, repository_cache)
+    sources = bundle_source_paths(mapping, repository, baseline)
+    baseline_sources = {source: MANUAL.source_lines_at_tag(repository, baseline, source) for source in sources}
+    package_patch = MANUAL.git_diff(
+        repository,
+        str(candidate["before_path"]),
+        "/dev/null" if candidate["after_path"] is None else str(candidate["after_path"]),
+        unified=3,
+        no_index=True,
+    )
+    replacements: dict[str, list[tuple[int, object]]] = {}
+    unmatched = []
+    generated_hunks = []
+    template_substitution = mapping["derivation"].get("template-substitution")
+    for hunk in MANUAL.parse_hunks(package_patch):
+        matches = [
+            (source, offset)
+            for source, lines in baseline_sources.items()
+            for offset in MANUAL.hunk_occurrences(hunk, lines)
+        ]
+        if len(matches) != 1:
+            template_matches = []
+            if template_substitution is not None:
+                source = template_substitution["source"]
+                if source in baseline_sources:
+                    template_matches = template_hunk_matches(
+                        hunk, baseline_sources[source], template_substitution["substitutions"]
+                    )
+            if len(template_matches) == 1:
+                generated_hunks.append(
+                    {
+                        "hunk": hunk.header,
+                        "source": template_substitution["source"],
+                        "source_line": template_matches[0] + 1,
+                        "substitutions": template_substitution["substitutions"],
+                        "patch": raw_hunk_patch(candidate["path"], hunk),
+                    }
+                )
+                continue
+            unmatched.append(
+                {
+                    "hunk": hunk.header,
+                    "reason": "ambiguous-baseline-before-side" if matches else "no-baseline-before-side-match",
+                    "candidates": [{"source": source, "source_line": offset + 1} for source, offset in matches],
+                }
+            )
+            continue
+        source, offset = matches[0]
+        previous = replacements.setdefault(source, [])
+        if any(offset < old_offset + len(old_hunk.before_lines) and old_offset < offset + len(hunk.before_lines) for old_offset, old_hunk in previous):
+            unmatched.append({"hunk": hunk.header, "reason": "overlapping-source-hunk-match", "source": source})
+            continue
+        previous.append((offset, hunk))
+    patches = []
+    source_changes = []
+    matched_sources = []
+    for source, source_replacements in sorted(replacements.items()):
+        before_lines = baseline_sources[source]
+        after_lines = list(before_lines)
+        for offset, hunk in sorted(source_replacements, reverse=True):
+            after_lines[offset : offset + len(hunk.before_lines)] = hunk.after_lines
+        patch = MANUAL.source_patch(source, before_lines, tuple(after_lines))
+        patches.append(patch)
+        source_changes.append(
+            {
+                "source": source,
+                "before_lines": before_lines,
+                "replacements": source_replacements,
+                "patch": patch,
+            }
+        )
+        matched_sources.append(source)
+    return {
+        "baseline": baseline,
+        "manifest": mapping["derivation"]["manifest"],
+        "patch": b"".join(patches),
+        "source_changes": source_changes,
+        "sources": matched_sources,
+        "matched_hunks": sum(len(values) for values in replacements.values()),
+        "generated_hunks": generated_hunks,
+        "unmatched_hunks": unmatched,
+    }
+
+
+def alias_hunk_key(mapping: dict, source: str, hunk: object) -> tuple[str, str, tuple[str, ...]]:
+    """Identify one source hunk by its baseline source-side content.
+
+    A declared alias group authorises conflict handling.  Mappings without one
+    still share the reserved automatic group so byte-for-byte duplicate source
+    hunks can never be emitted twice merely because an older definition lacks
+    the optional metadata. The header's line ranges are deliberately excluded:
+    package and public-baseline copies can have different earlier line counts
+    while retaining the same before-side source hunk.
+    """
+    deduplication = mapping.get("upstream_deduplication")
+    return (
+        mapping["github_repository"],
+        source,
+        hunk.before_lines,
+    )
+
+
+def alias_hunk_record(mapping: dict, source: str, hunk: object, artifact: str, upstream_diff: str) -> dict:
+    """Record the canonical source transformation selected for an alias hunk."""
+    deduplication = mapping["upstream_deduplication"]
+    return {
+        "after_lines": hunk.after_lines,
+        "artifact": artifact,
+        "priority": deduplication["priority"] if deduplication is not None else sys.maxsize,
+        "declared_alias_group": deduplication is not None,
+        "alias_group": deduplication["alias-group"] if deduplication is not None else "automatic-exact-source-hunk",
+        "source": source,
+        "upstream_diff": upstream_diff,
+    }
+
+
+def source_patch_for_replacements(source: str, before_lines: tuple[str, ...], replacements: list[tuple[int, object]]) -> bytes:
+    """Render a source patch containing exactly the supplied baseline hunks."""
+    after_lines = list(before_lines)
+    for offset, hunk in sorted(replacements, reverse=True):
+        after_lines[offset : offset + len(hunk.before_lines)] = hunk.after_lines
+    return MANUAL.source_patch(source, before_lines, tuple(after_lines))
+
+
+def unified_diff(relative_path: str, before_path: Path | None, after_path: Path | None) -> bytes:
+    """Return a readable unified diff, using /dev/null for added or removed text."""
+    command = [
+        "diff",
+        "--unified=3",
+        "--label",
+        f"before/{relative_path}",
+        "--label",
+        f"after/{relative_path}",
+        str(before_path) if before_path is not None else "/dev/null",
+        str(after_path) if after_path is not None else "/dev/null",
+    ]
+    try:
+        completed = subprocess.run(command, capture_output=True)
+    except OSError as error:
+        raise ReleaseTextDiffError(f"Could not create diff for {relative_path}: {error}") from error
+    if completed.returncode not in (0, 1):
+        detail = completed.stderr.decode("utf-8", errors="replace").strip()
+        raise ReleaseTextDiffError(f"Could not create diff for {relative_path}: {detail}")
+    return completed.stdout
+
+
+def write_unified_diff(destination: Path, relative_path: str, before_path: Path | None, after_path: Path | None) -> None:
+    """Write one unified diff to DESTINATION."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(unified_diff(relative_path, before_path, after_path))
+
+
+def write_directory_diff(destination: Path, artifacts: list[dict], path_key: str = "path") -> None:
+    """Write one concatenated unified diff for all changed text files in a directory mapping."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(
+        b"".join(
+            unified_diff(artifact[path_key], artifact["before_path"], artifact["after_path"])
+            for artifact in artifacts
+        )
+    )
+
+
+def artifact_record(candidate: dict, output: Path) -> dict:
+    """Record an artifact once with links to every emitted representation."""
+    before_artifact = candidate["before_artifact"]
+    after_artifact = candidate["after_artifact"]
+    artifact = after_artifact or before_artifact
+    assert artifact is not None
+    return {
+        "path": artifact.relative_path,
+        "change": candidate["change"],
+        "before": None if before_artifact is None else {"md5": before_artifact.md5, "size": before_artifact.size, "mime_type": candidate["before_mime"]},
+        "after": None if after_artifact is None else {"md5": after_artifact.md5, "size": after_artifact.size, "mime_type": candidate["after_mime"]},
+        "upstream": candidate["upstream"],
+        "binary_package_diff": candidate["binary_package_diff"],
+        "binary_only_diff": candidate.get("binary_only_diff"),
+        "template_diff": candidate.get("template_diff"),
+        "generated": candidate.get("generated"),
+        "template_hunk_diffs": candidate.get("template_hunk_diffs"),
+        "upstream_diff": candidate.get("upstream_diff"),
+        "upstream_diffs": candidate.get("upstream_diffs"),
+        "suppressed_alias_hunks": candidate.get("suppressed_alias_hunks"),
+        "alias_conflicts": candidate.get("alias_conflicts"),
+        "upstream_path": candidate.get("upstream_path"),
+        "upstream_paths": candidate.get("upstream_paths"),
+        "bundle_extraction": candidate.get("bundle_extraction"),
+    }
+
+
+def create_release_text_diffs(
+    before_or_after: str,
+    after_release: str | None,
+    results: Path,
+    output_root: Path | None = None,
+    definitions: Path | None = None,
+    repository_cache: Path = Path("/work/release-text-diff-repositories"),
+) -> Path:
+    if not RELEASE_VERSION.fullmatch(before_or_after) or (after_release is not None and not RELEASE_VERSION.fullmatch(after_release)):
+        raise ReleaseTextDiffError("Release labels must use numeric X.Y.Z form")
+
+    catalogue = results / "zimbra-non-patch-debian-package-catalogue.json"
+    packages = INSPECTOR.write_catalogue(catalogue)
+    definitions_path = definitions or ROOT.parent / "source-extractors"
+    configured_mappings = source_extractor_mappings(definitions_path)
+    configured_roots = {
+        package: sorted(
+            {mapping["artifact_root"] for mapping in mappings if mapping["artifact_root"]},
+            key=lambda root: (-len(root), root),
+        )
+        for package, mappings in configured_mappings.items()
+    }
+    global_negative_filters = shared_negative_filters(definitions_path)
+    before_release, after_release = selected_releases(packages, before_or_after, after_release)
+    if before_release == after_release:
+        raise ReleaseTextDiffError("Before and after releases must differ")
+    comparisons, skipped = release_comparisons(packages, before_release, after_release)
+    if not comparisons:
+        raise ReleaseTextDiffError(
+            f"No retained non-patch package build pairs match {before_release} to {after_release}"
+        )
+
+    root = output_root or results / "release-text-diffs"
+    output = unique_directory(root / INSPECTOR.safe_name(after_release))
+    report = []
+    total_changed = 0
+    total_text_artifacts = 0
+    total_binary_package_diffs = 0
+    total_binary_only_diffs = 0
+    total_template_diffs = 0
+    total_upstream_diffs = 0
+    total_upstream_alias_conflicts = 0
+    total_suppressed_alias_hunks = 0
+    total_excluded_by_filters = 0
+    binary_package_sequences: dict[str, int] = {}
+    binary_only_sequences: dict[str, int] = {}
+    template_sequences: dict[str, int] = {}
+    upstream_sequences: dict[str, int] = {}
+    alias_conflict_sequences: dict[str, int] = {}
+    for before, after in comparisons:
+        inspection, _ = INSPECTOR.compare(before, after, results / "deb-package-inspections", catalogue)
+        before_payload = inspection / "before" / "payload"
+        after_payload = inspection / "after" / "payload"
+        before_artifacts = INSPECTOR.inventory_package_artifacts(before_payload)
+        after_artifacts = INSPECTOR.inventory_package_artifacts(after_payload)
+        text_candidates = []
+        excluded_by_filters = 0
+        for change, before_artifact, after_artifact in changed_artifacts(before_artifacts, after_artifacts):
+            total_changed += 1
+            relative_path = (after_artifact or before_artifact).relative_path
+            if any(path_matches_filter(relative_path, pattern) for pattern in global_negative_filters):
+                excluded_by_filters += 1
+                total_excluded_by_filters += 1
+                continue
+            before_path = before_payload / relative_path if before_artifact is not None else None
+            after_path = after_payload / relative_path if after_artifact is not None else None
+            text, before_mime, after_mime = artifact_is_text(before_path, after_path)
+            if not text:
+                continue
+            root_source_mapping = root_source_mapping_for_artifact(configured_mappings, after.name, relative_path)
+            direct_source_mapping = direct_source_mapping_for_artifact(configured_mappings, after.name, relative_path)
+            text_candidates.append(
+                {
+                    "change": change,
+                    "before_artifact": before_artifact,
+                    "after_artifact": after_artifact,
+                    "before_mime": before_mime,
+                    "after_mime": after_mime,
+                    "before_path": before_path,
+                    "after_path": after_path,
+                    "path": relative_path,
+                    "upstream": upstream_for_artifact(configured_mappings, after.name, relative_path),
+                    "root_source_mapping": root_source_mapping,
+                    "upstream_path": (
+                        upstream_path_for_artifact(root_source_mapping, relative_path)
+                        if root_source_mapping is not None
+                        else direct_source_mapping["upstream_path"] if direct_source_mapping is not None else None
+                    ),
+                    "direct_source_mapping": direct_source_mapping,
+                    "generated_mapping": generated_mapping_for_artifact(configured_mappings, after.name, relative_path),
+                }
+            )
+
+        artifacts = []
+        diff_groups = []
+        directory_candidates: dict[tuple[str, str | None, str, str, str], list[dict]] = {}
+        individual_candidates = []
+        for candidate in text_candidates:
+            root = artifact_root_for_path(configured_roots, after.name, candidate["path"])
+            if root is not None:
+                directory_candidates.setdefault(
+                    (
+                        candidate["upstream"]["repository"],
+                        candidate["upstream"]["github_repository"],
+                        candidate["upstream"]["selection"],
+                        "source-extractor-artifact-root",
+                        root,
+                    ),
+                    [],
+                ).append(candidate)
+                continue
+            parent = PurePosixPath(candidate["path"]).parent.as_posix()
+            directory_candidates.setdefault(
+                (
+                    candidate["upstream"]["repository"],
+                    candidate["upstream"]["github_repository"],
+                    candidate["upstream"]["selection"],
+                    "parent-directory",
+                    parent,
+                ),
+                [],
+            ).append(candidate)
+        for group, candidates in list(directory_candidates.items()):
+            if group[3] == "parent-directory" and len(candidates) == 1:
+                individual_candidates.extend(candidates)
+                del directory_candidates[group]
+        for candidate in individual_candidates:
+            diff = output / "original_binary_packages_diffs" / generated_diff_filename(
+                candidate["upstream"], after_release, binary_package_sequences
+            )
+            write_unified_diff(diff, candidate["path"], candidate["before_path"], candidate["after_path"])
+            candidate["binary_package_diff"] = str(diff.relative_to(output))
+            total_binary_package_diffs += 1
+        for (repository, github_repository, selection, grouping, directory), candidates in sorted(directory_candidates.items()):
+            upstream = {
+                "github_repository": github_repository,
+                "repository": repository,
+                "selection": selection,
+            }
+            diff = output / "original_binary_packages_diffs" / generated_diff_filename(
+                upstream, after_release, binary_package_sequences
+            )
+            write_directory_diff(diff, candidates)
+            diff_groups.append(
+                {
+                    "upstream": upstream,
+                    "grouping": grouping,
+                    "directory": directory,
+                    "binary_package_diff": str(diff.relative_to(output)),
+                    "artifacts": [candidate["path"] for candidate in candidates],
+                }
+            )
+            for candidate in candidates:
+                candidate["binary_package_diff"] = str(diff.relative_to(output))
+            total_binary_package_diffs += 1
+
+        upstream_groups: dict[tuple[str, str, str, str, str], list[dict]] = {}
+        binary_only_candidates = []
+        generated_candidates = []
+        bundle_candidates = []
+        for candidate in text_candidates:
+            mapping = candidate["root_source_mapping"] or candidate["direct_source_mapping"]
+            if mapping is None:
+                if candidate["generated_mapping"] is not None:
+                    generated_candidates.append(candidate)
+                    continue
+                bundle_mapping = bundle_mapping_for_artifact(configured_mappings, after.name, candidate["path"])
+                if bundle_mapping is not None:
+                    bundle_candidates.append((candidate, bundle_mapping))
+                    continue
+                binary_only_candidates.append(candidate)
+                continue
+            mapping_kind = (
+                "artifact-root/source-root"
+                if candidate["root_source_mapping"] is not None
+                else "artifact/source-roots"
+            )
+            artifact_mapping = mapping["artifact_root"] or mapping["artifact"]
+            upstream_groups.setdefault(
+                (
+                    mapping["github_repository"],
+                    mapping["repository"],
+                    mapping_kind,
+                    artifact_mapping,
+                    mapping["source_root"],
+                ),
+                [],
+            ).append(candidate)
+        upstream_diff_groups = []
+        canonical_alias_hunks: dict[tuple[str, str, tuple[str, ...]], dict] = {}
+        for (github_repository, repository, mapping_kind, artifact_mapping, source_root), candidates in sorted(upstream_groups.items()):
+            upstream = {
+                "github_repository": github_repository,
+                "repository": repository,
+                "selection": mapping_kind,
+            }
+            diff = output / "upstream_diffs" / generated_diff_filename(
+                upstream, after_release, upstream_sequences, "upstream-changes"
+            )
+            write_directory_diff(diff, candidates, "upstream_path")
+            relative_diff = str(diff.relative_to(output))
+            upstream_diff_groups.append(
+                {
+                    "upstream": upstream,
+                    "mapping": mapping_kind,
+                    "artifact_root": artifact_mapping if mapping_kind == "artifact-root/source-root" else None,
+                    "artifact": artifact_mapping if mapping_kind == "artifact/source-roots" else None,
+                    "source_root": source_root,
+                    "upstream_diff": relative_diff,
+                    "artifacts": [candidate["path"] for candidate in candidates],
+                    "upstream_paths": [candidate["upstream_path"] for candidate in candidates],
+                }
+            )
+            for candidate in candidates:
+                candidate["upstream_diff"] = relative_diff
+                candidate.setdefault("upstream_diffs", []).append(relative_diff)
+                mapping = candidate["root_source_mapping"] or candidate["direct_source_mapping"]
+                assert mapping is not None
+                for hunk in MANUAL.parse_hunks(
+                    unified_diff(candidate["upstream_path"], candidate["before_path"], candidate["after_path"])
+                ):
+                    key = alias_hunk_key(mapping, candidate["upstream_path"], hunk)
+                    canonical_alias_hunks.setdefault(
+                        key,
+                        alias_hunk_record(mapping, candidate["upstream_path"], hunk, candidate["path"], relative_diff),
+                    )
+            total_upstream_diffs += 1
+        for candidate, mapping in sorted(
+            bundle_candidates,
+            key=lambda item: (
+                item[1]["upstream_deduplication"]["priority"]
+                if item[1]["upstream_deduplication"] is not None
+                else sys.maxsize,
+                item[0]["path"],
+            ),
+        ):
+            extraction = reconstruct_bundle_diff(mapping, candidate, before_release, after_release, repository_cache)
+            candidate["bundle_extraction"] = {
+                "baseline": extraction["baseline"],
+                "manifest": extraction["manifest"],
+                "matched_hunks": extraction["matched_hunks"],
+                "generated_hunks": [
+                    {
+                        "hunk": hunk["hunk"],
+                        "source": hunk["source"],
+                        "source_line": hunk["source_line"],
+                        "substitutions": hunk["substitutions"],
+                    }
+                    for hunk in extraction["generated_hunks"]
+                ],
+                "unmatched_hunks": extraction["unmatched_hunks"],
+            }
+            upstream = {
+                "github_repository": mapping["github_repository"],
+                "repository": mapping["repository"],
+                "selection": "ajx-package-bundle",
+            }
+            canonical_sources = []
+            for source_change in extraction["source_changes"]:
+                canonical_replacements = []
+                conflict_replacements = []
+                for offset, hunk in source_change["replacements"]:
+                    key = alias_hunk_key(mapping, source_change["source"], hunk)
+                    canonical = canonical_alias_hunks.get(key)
+                    if canonical is None:
+                        canonical_replacements.append((offset, hunk))
+                        continue
+                    if canonical["after_lines"] == hunk.after_lines:
+                        candidate.setdefault("suppressed_alias_hunks", []).append(
+                            {
+                                "source": source_change["source"],
+                                "hunk": hunk.header,
+                                "alias_group": canonical["alias_group"],
+                                "canonical_artifact": canonical["artifact"],
+                                "canonical_upstream_diff": canonical["upstream_diff"],
+                                "reason": "exact-source-hunk-alias",
+                            }
+                        )
+                        total_suppressed_alias_hunks += 1
+                        continue
+                    if not (
+                        canonical["declared_alias_group"]
+                        and mapping["upstream_deduplication"] is not None
+                        and canonical["alias_group"] == mapping["upstream_deduplication"]["alias-group"]
+                    ):
+                        canonical_replacements.append((offset, hunk))
+                        continue
+                    conflict_replacements.append((offset, hunk, canonical, key))
+                if canonical_replacements:
+                    diff = output / "upstream_diffs" / generated_diff_filename(
+                        upstream, after_release, upstream_sequences, "upstream-changes"
+                    )
+                    diff.parent.mkdir(parents=True, exist_ok=True)
+                    diff.write_bytes(
+                        source_patch_for_replacements(
+                            source_change["source"], source_change["before_lines"], canonical_replacements
+                        )
+                    )
+                    relative_diff = str(diff.relative_to(output))
+                    candidate.setdefault("upstream_diffs", []).append(relative_diff)
+                    candidate.setdefault("upstream_diff", relative_diff)
+                    canonical_sources.append(source_change["source"])
+                    for _, hunk in canonical_replacements:
+                        key = alias_hunk_key(mapping, source_change["source"], hunk)
+                        canonical_alias_hunks[key] = alias_hunk_record(
+                            mapping, source_change["source"], hunk, candidate["path"], relative_diff
+                        )
+                    total_upstream_diffs += 1
+                if conflict_replacements:
+                    replacements = [(offset, hunk) for offset, hunk, _, _ in conflict_replacements]
+                    diff = output / "upstream_diffs_alias_conflicts" / generated_diff_filename(
+                        upstream, after_release, alias_conflict_sequences, "alias-conflict-changes"
+                    )
+                    diff.parent.mkdir(parents=True, exist_ok=True)
+                    diff.write_bytes(
+                        source_patch_for_replacements(source_change["source"], source_change["before_lines"], replacements)
+                    )
+                    relative_diff = str(diff.relative_to(output))
+                    candidate.setdefault("alias_conflicts", []).extend(
+                        {
+                            "source": source_change["source"],
+                            "hunk": hunk.header,
+                            "alias_group": canonical["alias_group"],
+                            "canonical_artifact": canonical["artifact"],
+                            "canonical_upstream_diff": canonical["upstream_diff"],
+                            "diff": relative_diff,
+                            "reason": "same-source-hunk-different-after-lines",
+                        }
+                        for _, hunk, canonical, key in conflict_replacements
+                    )
+                    total_upstream_alias_conflicts += 1
+            if canonical_sources:
+                candidate["upstream_paths"] = canonical_sources
+            for hunk in extraction["generated_hunks"]:
+                upstream = {
+                    "github_repository": mapping["github_repository"],
+                    "repository": mapping["repository"],
+                    "selection": "generated-template-hunk",
+                }
+                template_diff = output / "template_diffs" / generated_diff_filename(
+                    upstream, after_release, template_sequences, "template-changes"
+                )
+                template_diff.parent.mkdir(parents=True, exist_ok=True)
+                template_diff.write_bytes(hunk["patch"])
+                candidate.setdefault("template_hunk_diffs", []).append(str(template_diff.relative_to(output)))
+                total_template_diffs += 1
+            if extraction["unmatched_hunks"]:
+                binary_only_candidates.append(candidate)
+        for candidate in generated_candidates:
+            mapping = candidate["generated_mapping"]
+            upstream = {
+                "github_repository": mapping["github_repository"],
+                "repository": mapping["repository"],
+                "selection": "generated-artifact",
+            }
+            template_diff = output / "template_diffs" / generated_diff_filename(
+                upstream, after_release, template_sequences, "template-changes"
+            )
+            write_unified_diff(template_diff, candidate["path"], candidate["before_path"], candidate["after_path"])
+            candidate["template_diff"] = str(template_diff.relative_to(output))
+            candidate["generated"] = {
+                "type": mapping["derivation"]["type"],
+                "source": mapping["derivation"].get("source"),
+                "substitutions": mapping["derivation"].get("substitutions"),
+                "reason": "package template substitution; not an upstream source patch",
+            }
+            total_template_diffs += 1
+        for candidate in binary_only_candidates:
+            diff = output / "binary_only_diffs" / generated_diff_filename(
+                candidate["upstream"], after_release, binary_only_sequences, "orphan-changes"
+            )
+            write_unified_diff(diff, candidate["path"], candidate["before_path"], candidate["after_path"])
+            candidate["binary_only_diff"] = str(diff.relative_to(output))
+            total_binary_only_diffs += 1
+
+        artifacts = [artifact_record(candidate, output) for candidate in text_candidates]
+        total_text_artifacts += len(text_candidates)
+        report.append(
+            {
+                "package": after.name,
+                "before_version": before.version,
+                "after_version": after.version,
+                "inspection": str(inspection.relative_to(results)),
+                "changed_regular_artifacts": len(changed_artifacts(before_artifacts, after_artifacts)),
+                "excluded_by_source_extractor_filters": excluded_by_filters,
+                "text_artifacts": artifacts,
+                "directory_diff_groups": diff_groups,
+                "upstream_diff_groups": upstream_diff_groups,
+            }
+        )
+
+    (output / "text-artifacts.json").write_text(
+        json.dumps({"schema_version": 1, "comparisons": report}, indent=2) + "\n", encoding="utf-8"
+    )
+    (output / "manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "method": "ubuntu24-debian-non-patch-release-text-diffs",
+                "requested_releases": {"before": before_release, "after": after_release},
+                "catalogue": str(catalogue),
+                "source_extractor_definitions": str(definitions_path),
+                "source_extractor_global_negative_filters": global_negative_filters,
+                "text_artifact_report": "text-artifacts.json",
+                "comparisons": len(report),
+                "changed_regular_artifacts": total_changed,
+                "text_artifacts": total_text_artifacts,
+                "binary_package_diffs": total_binary_package_diffs,
+                "binary_only_diffs": total_binary_only_diffs,
+                "template_diffs": total_template_diffs,
+                "upstream_diffs": total_upstream_diffs,
+                "upstream_alias_conflicts": total_upstream_alias_conflicts,
+                "suppressed_alias_hunks": total_suppressed_alias_hunks,
+                "excluded_by_source_extractor_filters": total_excluded_by_filters,
+                "skipped_packages": skipped,
+                "boundary": "Only regular package payload files are considered. A file is textual when file(1) identifies every available side as text/* or a recognised textual application MIME type. Packages are downloaded and extracted but never installed.",
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return output
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__, usage="%(prog)s [options] [<before-release>] <after-release>")
+    parser.add_argument("before_or_after", help="after release, or before release when AFTER is also supplied")
+    parser.add_argument("after", nargs="?", help="optional target release, for example 10.1.21")
+    parser.add_argument("--results-directory", type=Path, default=Path("/results"))
+    parser.add_argument("--output-directory", type=Path, help="parent directory for the release-named diff folder")
+    parser.add_argument("--definitions-directory", type=Path, default=ROOT.parent / "source-extractors")
+    parser.add_argument("--repository-cache", type=Path, default=Path("/work/release-text-diff-repositories"))
+    arguments = parser.parse_args()
+    try:
+        output = create_release_text_diffs(
+            arguments.before_or_after,
+            arguments.after,
+            arguments.results_directory,
+            arguments.output_directory,
+            arguments.definitions_directory,
+            arguments.repository_cache,
+        )
+    except (ReleaseTextDiffError, INSPECTOR.AnalysisError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 1
+    print(output)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

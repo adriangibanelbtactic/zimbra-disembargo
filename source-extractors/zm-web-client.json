@@ -17,6 +17,10 @@
     "opt/zimbra/jetty_base/webapps/zimbra/js/zimbraMail/voicemail/view/ZmCallListView.js",
     "opt/zimbra/jetty_base/webapps/zimbra/js/zimbraMail/core/ZmMimeTable.js",
     "opt/zimbra/jetty_base/webapps/zimbra/js/zimbraMail/mail/view/ZmMailMsgView.js",
+    "opt/zimbra/jetty_base/webapps/zimbra/js/zimbraMail/mail/model/ZmMailMsg.js",
+    "opt/zimbra/jetty_base/webapps/zimbra/js/zimbraMail/mail/view/ZmComposeView.js",
+    "opt/zimbra/jetty_base/webapps/zimbra/js/zimbraMail/prefs/view/ZmSharingPage.js",
+    "opt/zimbra/jetty_base/webapps/zimbra/js/zimbraMail/share/view/dialog/ZmAcceptShareDialog.js",
     "opt/zimbra/jetty_base/webapps/zimbra/js/zimbraMail/mail/model/ZmMailListFromGroup.js",
     "opt/zimbra/conf/templates/mail/Message.template",
     "opt/zimbra/jetty_base/webapps/zimbra/public/Resources.jsp",
@@ -50,6 +54,239 @@
     },
     {
       "package": "zimbra-mbox-webclient-war",
+      "artifact": "opt/zimbra/jetty_base/webapps/zimbra/js/zimbraMail/mail/model/ZmMailMsg.js",
+      "source-roots": [
+        "WebRoot/js/zimbraMail/mail/model"
+      ],
+      "source-suffixes": [
+        ".js"
+      ],
+      "upstream-deduplication": {
+        "alias-group": "zm-web-client-client-modules",
+        "priority": 10
+      }
+    },
+    {
+      "package": "zimbra-mbox-webclient-war",
+      "artifact": "opt/zimbra/jetty_base/webapps/zimbra/js/zimbraMail/mail/view/ZmComposeView.js",
+      "source-roots": [
+        "WebRoot/js/zimbraMail/mail/view"
+      ],
+      "source-suffixes": [
+        ".js"
+      ],
+      "upstream-deduplication": {
+        "alias-group": "zm-web-client-client-modules",
+        "priority": 10
+      }
+    },
+    {
+      "package": "zimbra-mbox-webclient-war",
+      "artifact": "opt/zimbra/jetty_base/webapps/zimbra/js/zimbraMail/prefs/view/ZmSharingPage.js",
+      "source-roots": [
+        "WebRoot/js/zimbraMail/prefs/view"
+      ],
+      "source-suffixes": [
+        ".js"
+      ],
+      "upstream-deduplication": {
+        "alias-group": "zm-web-client-client-modules",
+        "priority": 10
+      }
+    },
+    {
+      "package": "zimbra-mbox-webclient-war",
+      "artifact": "opt/zimbra/jetty_base/webapps/zimbra/js/zimbraMail/share/model/ZmSettings.js",
+      "source-roots": [
+        "WebRoot/js/zimbraMail/share/model"
+      ],
+      "source-suffixes": [
+        ".js"
+      ],
+      "derivation": {
+        "type": "template-substitution",
+        "source": "WebRoot/js/zimbraMail/share/model/ZmSettings.js",
+        "substitutions": {
+          "@buildDateTime@": "release-specific client build date and time",
+          "@buildRelease@": "release-specific client build release",
+          "@buildVersion@": "release-specific client build version"
+        }
+      }
+    },
+    {
+      "package": "zimbra-mbox-webclient-war",
+      "artifact": "opt/zimbra/jetty_base/webapps/zimbra/js/zimbraMail/share/view/dialog/ZmAcceptShareDialog.js",
+      "source-roots": [
+        "WebRoot/js/zimbraMail/share/view/dialog"
+      ],
+      "source-suffixes": [
+        ".js"
+      ],
+      "upstream-deduplication": {
+        "alias-group": "zm-web-client-client-modules",
+        "priority": 10
+      }
+    },
+    {
+      "package": "zimbra-mbox-webclient-war",
+      "artifact": "opt/zimbra/jetty_base/etc/zimbra.web.xml.in",
+      "source-roots": [
+        "WebRoot/WEB-INF"
+      ],
+      "source-suffixes": [
+        ".xml"
+      ],
+      "derivation": {
+        "type": "template-substitution",
+        "source": "WebRoot/WEB-INF/web.xml",
+        "substitutions": {
+          "@jsVersion@": "release-specific JavaScript cache-buster value"
+        }
+      }
+    },
+    {
+      "package": "zimbra-mbox-webclient-war",
+      "artifact": "opt/zimbra/jetty_base/webapps/zimbra/WEB-INF/web.xml",
+      "source-roots": [
+        "WebRoot/WEB-INF"
+      ],
+      "source-suffixes": [
+        ".xml"
+      ],
+      "derivation": {
+        "type": "template-substitution",
+        "source": "WebRoot/WEB-INF/web.xml",
+        "substitutions": {
+          "@jsVersion@": "release-specific JavaScript cache-buster value"
+        }
+      }
+    },
+    {
+      "package": "zimbra-mbox-webclient-war",
+      "artifact": "opt/zimbra/jetty_base/webapps/zimbra/js/MailCore_all.js",
+      "derivation": {
+        "type": "ajx-package-bundle",
+        "manifest": "WebRoot/js/zimbraMail/package/MailCore.js"
+      },
+      "source-roots": [
+        "WebRoot/js/zimbraMail"
+      ],
+      "source-suffixes": [
+        ".js"
+      ],
+      "upstream-deduplication": {
+        "alias-group": "zm-web-client-client-modules",
+        "priority": 20
+      }
+    },
+    {
+      "package": "zimbra-mbox-webclient-war",
+      "artifact": "opt/zimbra/jetty_base/webapps/zimbra/js/NewWindow_2_all.js",
+      "derivation": {
+        "type": "ajx-package-bundle",
+        "manifest": "WebRoot/js/zimbraMail/package/NewWindow_2.js",
+        "template-substitution": {
+          "source": "WebRoot/js/zimbraMail/share/model/ZmSettings.js",
+          "substitutions": {
+            "@buildDateTime@": "release-specific client build date and time",
+            "@buildRelease@": "release-specific client build release",
+            "@buildVersion@": "release-specific client build version"
+          }
+        }
+      },
+      "source-roots": [
+        "WebRoot/js/zimbraMail"
+      ],
+      "source-suffixes": [
+        ".js"
+      ],
+      "upstream-deduplication": {
+        "alias-group": "zm-web-client-client-modules",
+        "priority": 20
+      }
+    },
+    {
+      "package": "zimbra-mbox-webclient-war",
+      "artifact": "opt/zimbra/jetty_base/webapps/zimbra/js/Preferences_all.js",
+      "derivation": {
+        "type": "ajx-package-bundle",
+        "manifest": "WebRoot/js/zimbraMail/package/Preferences.js"
+      },
+      "source-roots": [
+        "WebRoot/js/zimbraMail"
+      ],
+      "source-suffixes": [
+        ".js"
+      ],
+      "upstream-deduplication": {
+        "alias-group": "zm-web-client-client-modules",
+        "priority": 20
+      }
+    },
+    {
+      "package": "zimbra-mbox-webclient-war",
+      "artifact": "opt/zimbra/jetty_base/webapps/zimbra/js/Share_all.js",
+      "derivation": {
+        "type": "ajx-package-bundle",
+        "manifest": "WebRoot/js/zimbraMail/package/Share.js"
+      },
+      "source-roots": [
+        "WebRoot/js/zimbraMail"
+      ],
+      "source-suffixes": [
+        ".js"
+      ],
+      "upstream-deduplication": {
+        "alias-group": "zm-web-client-client-modules",
+        "priority": 20
+      }
+    },
+    {
+      "package": "zimbra-mbox-webclient-war",
+      "artifact": "opt/zimbra/jetty_base/webapps/zimbra/js/Startup1_2_all.js",
+      "derivation": {
+        "type": "ajx-package-bundle",
+        "manifest": "WebRoot/js/zimbraMail/package/Startup1_2.js",
+        "template-substitution": {
+          "source": "WebRoot/js/zimbraMail/share/model/ZmSettings.js",
+          "substitutions": {
+            "@buildDateTime@": "release-specific client build date and time",
+            "@buildRelease@": "release-specific client build release",
+            "@buildVersion@": "release-specific client build version"
+          }
+        }
+      },
+      "source-roots": [
+        "WebRoot/js/zimbraMail"
+      ],
+      "source-suffixes": [
+        ".js"
+      ],
+      "upstream-deduplication": {
+        "alias-group": "zm-web-client-client-modules",
+        "priority": 20
+      }
+    },
+    {
+      "package": "zimbra-mbox-webclient-war",
+      "artifact": "opt/zimbra/jetty_base/webapps/zimbra/js/Tasks_all.js",
+      "derivation": {
+        "type": "ajx-package-bundle",
+        "manifest": "WebRoot/js/zimbraMail/package/Tasks.js"
+      },
+      "source-roots": [
+        "WebRoot/js/zimbraMail"
+      ],
+      "source-suffixes": [
+        ".js"
+      ],
+      "upstream-deduplication": {
+        "alias-group": "zm-web-client-client-modules",
+        "priority": 20
+      }
+    },
+    {
+      "package": "zimbra-mbox-webclient-war",
       "artifact": "opt/zimbra/jetty_base/webapps/zimbra/js/zimbraMail/core/ZmMimeTable.js",
       "source-roots": [
         "WebRoot/js/zimbraMail/core"
@@ -66,7 +303,11 @@
       ],
       "source-suffixes": [
         ".js"
-      ]
+      ],
+      "upstream-deduplication": {
+        "alias-group": "zm-web-client-client-modules",
+        "priority": 10
+      }
     },
     {
       "package": "zimbra-mbox-webclient-war",
@@ -135,7 +376,11 @@
       ],
       "source-suffixes": [
         ".js"
-      ]
+      ],
+      "upstream-deduplication": {
+        "alias-group": "zm-web-client-client-modules",
+        "priority": 20
+      }
     },
     {
       "package": "zimbra-mbox-webclient-war",
@@ -165,7 +410,11 @@
       ],
       "source-suffixes": [
         ".js"
-      ]
+      ],
+      "upstream-deduplication": {
+        "alias-group": "zm-web-client-client-modules",
+        "priority": 10
+      }
     },
     {
       "package": "zimbra-mbox-webclient-war",

@@ -85,6 +85,21 @@ def suffix_list(value: object, label: str) -> list[str]:
     return value
 
 
+def upstream_deduplication(value: object, label: str) -> dict[str, object] | None:
+    """Validate optional release-report alias metadata on one mapping."""
+    if value is None:
+        return None
+    if not isinstance(value, dict) or set(value) != {"alias-group", "priority"}:
+        raise ExtractionError(f"{label} must contain alias-group and priority only")
+    group = value.get("alias-group")
+    priority = value.get("priority")
+    if not isinstance(group, str) or not group:
+        raise ExtractionError(f"{label} alias-group must be a non-empty string")
+    if not isinstance(priority, int) or isinstance(priority, bool) or priority < 0:
+        raise ExtractionError(f"{label} priority must be a non-negative integer")
+    return {"alias-group": group, "priority": priority}
+
+
 def load_definition(path: Path) -> dict[str, Any]:
     definition = read_json(path)
     if definition.get("schema_version") != DEFINITION_SCHEMA_VERSION:
@@ -122,6 +137,11 @@ def load_definition(path: Path) -> dict[str, Any]:
         else:
             mapping["artifact-root"] = relative_path(mapping["artifact-root"], f"mapping {index} artifact root")
             mapping["source-root"] = relative_path(mapping.get("source-root"), f"mapping {index} source root")
+        deduplication = upstream_deduplication(
+            mapping.get("upstream-deduplication"), f"mapping {index} upstream-deduplication"
+        )
+        if deduplication is not None:
+            mapping["upstream-deduplication"] = deduplication
     definition["filter-positive"] = positive
     definition["filter-negative"] = negative
     definition["artifact-positive"] = artifact_positive
