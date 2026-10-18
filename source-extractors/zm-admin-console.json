@@ -17,7 +17,10 @@
     ".jar",
     ".class",
     ".java",
+    "AjxMsg*properties",
     "ZaMsg*properties",
+    "ZhMsg*properties",
+    "ZmMsg*properties",
     "ZsMsg*properties",
     ".zgz"
   ],
