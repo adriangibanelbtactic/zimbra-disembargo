@@ -17,6 +17,7 @@
     "opt/zimbra/jetty_base/webapps/zimbra/js/zimbraMail/voicemail/view/ZmCallListView.js",
     "opt/zimbra/jetty_base/webapps/zimbra/js/zimbraMail/core/ZmMimeTable.js",
     "opt/zimbra/jetty_base/webapps/zimbra/js/zimbraMail/mail/view/ZmMailMsgView.js",
+    "opt/zimbra/jetty_base/webapps/zimbra/js/zimbraMail/mail/model/ZmMailMsg.js",
     "opt/zimbra/jetty_base/webapps/zimbra/js/zimbraMail/mail/model/ZmMailListFromGroup.js",
     "opt/zimbra/conf/templates/mail/Message.template",
     "opt/zimbra/jetty_base/webapps/zimbra/public/Resources.jsp",
@@ -46,6 +47,16 @@
       "artifact": "opt/zimbra/jetty_base/webapps/zimbra/js/zimbraMail/share/model/ZmObjectManager.js",
       "source-roots": [
         "WebRoot/js/zimbraMail/share/model"
+      ],
+      "source-suffixes": [
+        ".js"
+      ]
+    },
+    {
+      "package": "zimbra-mbox-webclient-war",
+      "artifact": "opt/zimbra/jetty_base/webapps/zimbra/js/zimbraMail/mail/model/ZmMailMsg.js",
+      "source-roots": [
+        "WebRoot/js/zimbraMail/mail/model"
       ],
       "source-suffixes": [
         ".js"
