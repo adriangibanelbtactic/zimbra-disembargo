@@ -108,6 +108,10 @@ tasks_mapping = module.bundle_mapping_for_artifact(
 )
 assert tasks_mapping is not None
 assert tasks_mapping["derivation"]["manifest"] == "WebRoot/js/zimbraMail/package/Tasks.js"
+assert tasks_mapping["upstream_deduplication"] == {
+    "alias-group": "zm-web-client-client-modules",
+    "priority": 20,
+}
 assert module.upstream_for_artifact(
     project_mappings,
     "zimbra-mbox-webclient-war",
@@ -145,6 +149,10 @@ mail_message_mapping = module.direct_source_mapping_for_artifact(
 )
 assert mail_message_mapping is not None
 assert mail_message_mapping["upstream_path"] == "WebRoot/js/zimbraMail/mail/model/ZmMailMsg.js"
+assert mail_message_mapping["upstream_deduplication"] == {
+    "alias-group": "zm-web-client-client-modules",
+    "priority": 10,
+}
 compose_mapping = module.direct_source_mapping_for_artifact(
     project_mappings,
     "zimbra-mbox-webclient-war",
@@ -234,6 +242,28 @@ with tempfile.TemporaryDirectory() as temporary_directory:
     assert reconstruction["matched_hunks"] == 1
     assert not reconstruction["unmatched_hunks"]
     assert b"+\tattach.contentLocation = null;" in reconstruction["patch"]
+    automatic_mapping = {
+        "github_repository": "Example/zm-web-client",
+        "upstream_deduplication": None,
+    }
+    automatic_hunk = module.MANUAL.parse_hunks(reconstruction["patch"])[0]
+    assert module.alias_hunk_key(automatic_mapping, reconstruction["sources"][0], automatic_hunk) == (
+        "Example/zm-web-client",
+        reconstruction["sources"][0],
+        automatic_hunk.before_lines,
+    )
+    shifted_hunk = module.MANUAL.Hunk(
+        "@@ -999,1 +999,1 @@",
+        automatic_hunk.before_lines,
+        automatic_hunk.after_lines,
+        automatic_hunk.patch,
+    )
+    assert module.alias_hunk_key(automatic_mapping, reconstruction["sources"][0], automatic_hunk) == module.alias_hunk_key(
+        automatic_mapping, reconstruction["sources"][0], shifted_hunk
+    )
+    assert not module.alias_hunk_record(
+        automatic_mapping, reconstruction["sources"][0], automatic_hunk, "bundle.js", "upstream.diff"
+    )["declared_alias_group"]
 
     original_catalogue = module.INSPECTOR.write_catalogue
     original_compare = module.INSPECTOR.compare
@@ -420,3 +450,108 @@ with tempfile.TemporaryDirectory() as temporary_directory:
     assert all("-orphan-changes_" in diff.name for diff in (output / "binary_only_diffs").glob("*.diff"))
     assert all("-upstream-changes_" in diff.name for diff in (output / "upstream_diffs").glob("*.diff"))
     assert all(item["upstream"]["github_repository"] == "Example/example" for item in report["comparisons"][0]["text_artifacts"])
+
+    alias_upstream = temporary / "alias-upstream"
+    alias_upstream.mkdir()
+    subprocess.run(["git", "init"], cwd=alias_upstream, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.test"], cwd=alias_upstream, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=alias_upstream, check=True)
+    alias_source = alias_upstream / "src/direct.js"
+    alias_manifest = alias_upstream / "src/package/Bundle.js"
+    alias_source.parent.mkdir(parents=True)
+    alias_manifest.parent.mkdir(parents=True)
+    alias_source.write_text("const enabled = false;\n", encoding="utf-8")
+    alias_manifest.write_text('AjxPackage.require("src.direct");\n', encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=alias_upstream, check=True)
+    subprocess.run(["git", "commit", "-m", "before"], cwd=alias_upstream, check=True, capture_output=True)
+    subprocess.run(["git", "tag", "10.1.20"], cwd=alias_upstream, check=True)
+
+    alias_definitions = temporary / "alias-definitions"
+    alias_definitions.mkdir()
+    (alias_definitions / "alias.json").write_text(
+        json.dumps(
+            {
+                "upstream": {"github_repository": "Example/alias", "url": str(alias_upstream)},
+                "filter-negative": [".java"],
+                "mappings": [
+                    {
+                        "package": "zimbra-alias",
+                        "artifact": "opt/zimbra/direct.js",
+                        "source-roots": ["src"],
+                        "upstream-deduplication": {"alias-group": "alias-test", "priority": 10},
+                    },
+                    {
+                        "package": "zimbra-alias",
+                        "artifact": "opt/zimbra/bundle.js",
+                        "source-roots": ["src"],
+                        "derivation": {"type": "ajx-package-bundle", "manifest": "src/package/Bundle.js"},
+                        "upstream-deduplication": {"alias-group": "alias-test", "priority": 20},
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    alias_catalogue = {
+        "zimbra-alias": [
+            package("zimbra-alias", "10.1.20.1-1.u24", "amd64", ("test",)),
+            package("zimbra-alias", "10.1.21.1-1.u24", "amd64", ("test",)),
+        ]
+    }
+    mode = "same"
+
+    def alias_catalogue_writer(destination):
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text("{}\n", encoding="utf-8")
+        return alias_catalogue
+
+    def alias_compare(before_package, after_package, results_directory, catalogue_path):
+        inspection = results_directory / after_package.name / mode
+        before_payload = inspection / "before" / "payload" / "opt" / "zimbra"
+        after_payload = inspection / "after" / "payload" / "opt" / "zimbra"
+        before_payload.mkdir(parents=True)
+        after_payload.mkdir(parents=True)
+        (before_payload / "direct.js").write_text("const enabled = false;\n", encoding="utf-8")
+        (after_payload / "direct.js").write_text("const enabled = true;\n", encoding="utf-8")
+        (before_payload / "bundle.js").write_text("const enabled = false;\n", encoding="utf-8")
+        bundle_after = "const enabled = true;\n" if mode == "same" else "const enabled = alternate;\n"
+        (after_payload / "bundle.js").write_text(bundle_after, encoding="utf-8")
+        return inspection, []
+
+    module.INSPECTOR.write_catalogue = alias_catalogue_writer
+    module.INSPECTOR.compare = alias_compare
+    try:
+        alias_output = module.create_release_text_diffs(
+            "10.1.20", "10.1.21", temporary / "alias-results", definitions=alias_definitions,
+            repository_cache=temporary / "alias-cache",
+        )
+        mode = "conflict"
+        conflict_output = module.create_release_text_diffs(
+            "10.1.20", "10.1.21", temporary / "alias-results", definitions=alias_definitions,
+            repository_cache=temporary / "alias-cache",
+        )
+    finally:
+        module.INSPECTOR.write_catalogue = original_catalogue
+        module.INSPECTOR.compare = original_compare
+
+    alias_manifest = json.loads((alias_output / "manifest.json").read_text(encoding="utf-8"))
+    alias_report = json.loads((alias_output / "text-artifacts.json").read_text(encoding="utf-8"))
+    alias_bundle = next(item for item in alias_report["comparisons"][0]["text_artifacts"] if item["path"] == "opt/zimbra/bundle.js")
+    assert alias_manifest["upstream_diffs"] == 1
+    assert alias_manifest["suppressed_alias_hunks"] == 1
+    assert alias_manifest["upstream_alias_conflicts"] == 0
+    assert alias_bundle["upstream_diff"] is None
+    assert alias_bundle["suppressed_alias_hunks"][0]["reason"] == "exact-source-hunk-alias"
+    assert not (alias_output / "upstream_diffs_alias_conflicts").exists()
+    canonical_diff = next((alias_output / "upstream_diffs").glob("*.diff"))
+    subprocess.run(["git", "apply", "--check", str(canonical_diff)], cwd=alias_upstream, check=True)
+
+    conflict_manifest = json.loads((conflict_output / "manifest.json").read_text(encoding="utf-8"))
+    conflict_report = json.loads((conflict_output / "text-artifacts.json").read_text(encoding="utf-8"))
+    conflict_bundle = next(item for item in conflict_report["comparisons"][0]["text_artifacts"] if item["path"] == "opt/zimbra/bundle.js")
+    assert conflict_manifest["upstream_diffs"] == 1
+    assert conflict_manifest["suppressed_alias_hunks"] == 0
+    assert conflict_manifest["upstream_alias_conflicts"] == 1
+    conflict_diff = next((conflict_output / "upstream_diffs_alias_conflicts").glob("*.diff"))
+    subprocess.run(["git", "apply", "--check", str(conflict_diff)], cwd=alias_upstream, check=True)
+    assert conflict_bundle["alias_conflicts"][0]["reason"] == "same-source-hunk-different-after-lines"

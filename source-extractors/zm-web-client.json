@@ -63,7 +63,11 @@
       ],
       "source-suffixes": [
         ".js"
-      ]
+      ],
+      "upstream-deduplication": {
+        "alias-group": "zm-web-client-client-modules",
+        "priority": 10
+      }
     },
     {
       "package": "zimbra-mbox-webclient-war",
@@ -73,7 +77,11 @@
       ],
       "source-suffixes": [
         ".js"
-      ]
+      ],
+      "upstream-deduplication": {
+        "alias-group": "zm-web-client-client-modules",
+        "priority": 10
+      }
     },
     {
       "package": "zimbra-mbox-webclient-war",
@@ -83,7 +91,11 @@
       ],
       "source-suffixes": [
         ".js"
-      ]
+      ],
+      "upstream-deduplication": {
+        "alias-group": "zm-web-client-client-modules",
+        "priority": 10
+      }
     },
     {
       "package": "zimbra-mbox-webclient-war",
@@ -112,7 +124,11 @@
       ],
       "source-suffixes": [
         ".js"
-      ]
+      ],
+      "upstream-deduplication": {
+        "alias-group": "zm-web-client-client-modules",
+        "priority": 10
+      }
     },
     {
       "package": "zimbra-mbox-webclient-war",
@@ -160,7 +176,11 @@
       ],
       "source-suffixes": [
         ".js"
-      ]
+      ],
+      "upstream-deduplication": {
+        "alias-group": "zm-web-client-client-modules",
+        "priority": 20
+      }
     },
     {
       "package": "zimbra-mbox-webclient-war",
@@ -182,7 +202,11 @@
       ],
       "source-suffixes": [
         ".js"
-      ]
+      ],
+      "upstream-deduplication": {
+        "alias-group": "zm-web-client-client-modules",
+        "priority": 20
+      }
     },
     {
       "package": "zimbra-mbox-webclient-war",
@@ -196,7 +220,11 @@
       ],
       "source-suffixes": [
         ".js"
-      ]
+      ],
+      "upstream-deduplication": {
+        "alias-group": "zm-web-client-client-modules",
+        "priority": 20
+      }
     },
     {
       "package": "zimbra-mbox-webclient-war",
@@ -210,7 +238,11 @@
       ],
       "source-suffixes": [
         ".js"
-      ]
+      ],
+      "upstream-deduplication": {
+        "alias-group": "zm-web-client-client-modules",
+        "priority": 20
+      }
     },
     {
       "package": "zimbra-mbox-webclient-war",
@@ -232,7 +264,11 @@
       ],
       "source-suffixes": [
         ".js"
-      ]
+      ],
+      "upstream-deduplication": {
+        "alias-group": "zm-web-client-client-modules",
+        "priority": 20
+      }
     },
     {
       "package": "zimbra-mbox-webclient-war",
@@ -246,7 +282,11 @@
       ],
       "source-suffixes": [
         ".js"
-      ]
+      ],
+      "upstream-deduplication": {
+        "alias-group": "zm-web-client-client-modules",
+        "priority": 20
+      }
     },
     {
       "package": "zimbra-mbox-webclient-war",
@@ -266,7 +306,11 @@
       ],
       "source-suffixes": [
         ".js"
-      ]
+      ],
+      "upstream-deduplication": {
+        "alias-group": "zm-web-client-client-modules",
+        "priority": 10
+      }
     },
     {
       "package": "zimbra-mbox-webclient-war",
@@ -335,7 +379,11 @@
       ],
       "source-suffixes": [
         ".js"
-      ]
+      ],
+      "upstream-deduplication": {
+        "alias-group": "zm-web-client-client-modules",
+        "priority": 20
+      }
     },
     {
       "package": "zimbra-mbox-webclient-war",
@@ -365,7 +413,11 @@
       ],
       "source-suffixes": [
         ".js"
-      ]
+      ],
+      "upstream-deduplication": {
+        "alias-group": "zm-web-client-client-modules",
+        "priority": 10
+      }
     },
     {
       "package": "zimbra-mbox-webclient-war",

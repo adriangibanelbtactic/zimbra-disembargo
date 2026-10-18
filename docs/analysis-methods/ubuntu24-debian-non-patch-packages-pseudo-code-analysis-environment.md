@@ -257,6 +257,32 @@ artifact filename is appended to its configured source root. For example,
 file is used directly. This is the patch-ready representation for that upstream
 repository.
 
+Mappings may declare `upstream-deduplication` metadata with an `alias-group`
+and non-negative `priority`. Use one alias group only for installed artifacts
+known to expose the same upstream source hunks, such as directly installed
+JavaScript modules and the `_all.js` bundles that contain them. Direct modules
+normally use a lower priority than their generated bundle aliases. A bundle is
+processed after its direct counterpart and after lower-priority bundles; within
+the same priority, its installed artifact path gives a stable order.
+
+For aliases in the same group, the first reconstructed source hunk is canonical
+only when the upstream repository, source path, and before-side lines agree.
+Hunk line ranges are not compared because a package copy can have extra earlier
+lines while containing the same source change. A later alias with identical
+after-side lines is recorded as a
+suppressed alias in `text-artifacts.json` and does not create a second upstream
+diff. A later alias with different after-side lines is retained in
+`upstream_diffs_alias_conflicts/`; its artifact record links both that variant
+and the earlier canonical diff. Therefore `upstream_diffs/` remains the clean,
+canonical patch set, while `upstream_diffs_alias_conflicts/` preserves competing
+evidence for review rather than silently replacing the first result.
+
+As a backstop for older mappings that do not yet declare this metadata, exact
+source-hunk duplicates from the same upstream repository are also emitted only
+once. The automatic rule never classifies different after-side lines as a
+conflict; only a declared alias group can place such a variant in
+`upstream_diffs_alias_conflicts/`.
+
 `template_diffs/` contains raw installed-path evidence for an explicitly
 declared `template-substitution` derivation, including matching hunks found in
 an Ajx bundle. These changes are not rewritten as upstream patches: the package
