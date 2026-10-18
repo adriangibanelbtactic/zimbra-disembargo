@@ -193,6 +193,7 @@ def source_extractor_mappings(definitions: Path) -> dict[str, list[dict]]:
             root = mapping.get("artifact-root")
             source_root = mapping.get("source-root")
             source_roots = mapping.get("source-roots")
+            derivation = mapping.get("derivation")
             if not isinstance(package, str) or not package or (artifact is not None and not isinstance(artifact, str)) or (root is not None and not isinstance(root, str)) or (source_root is not None and not isinstance(source_root, str)):
                 raise ReleaseTextDiffError(f"Source extractor definition {definition_path} has an invalid package artifact mapping")
             if artifact is None and (root is None or not root.strip("/")):
@@ -204,6 +205,25 @@ def source_extractor_mappings(definitions: Path) -> dict[str, list[dict]]:
                 or not all(isinstance(item, str) and item.strip("/") for item in source_roots)
             ):
                 raise ReleaseTextDiffError(f"Source extractor definition {definition_path} mapping has an invalid source-roots list")
+            if derivation is not None:
+                if not isinstance(derivation, dict) or not isinstance(derivation.get("type"), str):
+                    raise ReleaseTextDiffError(f"Source extractor definition {definition_path} mapping has an invalid derivation")
+                if derivation["type"] == "template-substitution":
+                    source = derivation.get("source")
+                    substitutions = derivation.get("substitutions")
+                    if not isinstance(source, str) or not source.strip("/") or not isinstance(substitutions, dict) or not substitutions:
+                        raise ReleaseTextDiffError(
+                            f"Source extractor definition {definition_path} template-substitution derivation is invalid"
+                        )
+                    if not all(isinstance(token, str) and token and isinstance(description, str) and description for token, description in substitutions.items()):
+                        raise ReleaseTextDiffError(
+                            f"Source extractor definition {definition_path} template-substitution substitutions are invalid"
+                        )
+                    derivation = {
+                        "type": "template-substitution",
+                        "source": source.strip("/"),
+                        "substitutions": dict(sorted(substitutions.items())),
+                    }
             package_mappings.setdefault(package, []).append(
                 {
                     "github_repository": github_repository,
@@ -212,7 +232,7 @@ def source_extractor_mappings(definitions: Path) -> dict[str, list[dict]]:
                     "artifact_root": root.strip("/") if isinstance(root, str) else None,
                     "source_root": source_root.strip("/") if isinstance(source_root, str) else None,
                     "source_roots": [item.strip("/") for item in source_roots] if isinstance(source_roots, list) else [],
-                    "derivation": mapping.get("derivation") is not None,
+                    "derivation": derivation,
                 }
             )
     return package_mappings
@@ -359,7 +379,7 @@ def direct_source_mapping_for_artifact(mappings: dict[str, list[dict]], package:
     candidates = [
         mapping
         for mapping in mappings.get(package, [])
-        if mapping["artifact"] == path and mapping["source_roots"] and not mapping["derivation"]
+        if mapping["artifact"] == path and mapping["source_roots"] and mapping["derivation"] is None
     ]
     if not candidates:
         return None
@@ -378,6 +398,36 @@ def direct_source_mapping_for_artifact(mappings: dict[str, list[dict]], package:
         raise ReleaseTextDiffError(f"Ambiguous direct artifact/source-roots mapping for {package}:{path}")
     mapping, source_root, upstream_path = resolved[0]
     return {**mapping, "source_root": source_root, "upstream_path": upstream_path}
+
+
+def generated_mapping_for_artifact(mappings: dict[str, list[dict]], package: str, path: str) -> dict | None:
+    """Return one explicit generated-artifact mapping, never an upstream patch mapping.
+
+    Template substitution changes package bytes without changing the public source
+    template. They are retained as generated evidence, rather than fabricating a
+    non-applicable diff against that template.
+    """
+    candidates = [
+        mapping
+        for mapping in mappings.get(package, [])
+        if mapping["artifact"] == path
+        and mapping["derivation"] is not None
+        and mapping["derivation"].get("type") == "template-substitution"
+    ]
+    if not candidates:
+        return None
+    identities = {
+        (
+            mapping["github_repository"],
+            mapping["repository"],
+            mapping["derivation"]["type"],
+            mapping["derivation"].get("source"),
+        )
+        for mapping in candidates
+    }
+    if len(identities) != 1:
+        raise ReleaseTextDiffError(f"Ambiguous generated-artifact mapping for {package}:{path}")
+    return candidates[0]
 
 
 def generated_diff_filename(
@@ -442,6 +492,9 @@ def artifact_record(candidate: dict, output: Path) -> dict:
         "upstream": candidate["upstream"],
         "binary_package_diff": candidate["binary_package_diff"],
         "binary_only_diff": candidate.get("binary_only_diff"),
+        "generated_diff": candidate.get("generated_diff"),
+        "template_diff": candidate.get("template_diff"),
+        "generated": candidate.get("generated"),
         "upstream_diff": candidate.get("upstream_diff"),
         "upstream_path": candidate.get("upstream_path"),
     }
@@ -485,10 +538,14 @@ def create_release_text_diffs(
     total_text_artifacts = 0
     total_binary_package_diffs = 0
     total_binary_only_diffs = 0
+    total_generated_diffs = 0
+    total_template_diffs = 0
     total_upstream_diffs = 0
     total_excluded_by_filters = 0
     binary_package_sequences: dict[str, int] = {}
     binary_only_sequences: dict[str, int] = {}
+    generated_sequences: dict[str, int] = {}
+    template_sequences: dict[str, int] = {}
     upstream_sequences: dict[str, int] = {}
     for before, after in comparisons:
         inspection, _ = INSPECTOR.compare(before, after, results / "deb-package-inspections", catalogue)
@@ -530,6 +587,7 @@ def create_release_text_diffs(
                         else direct_source_mapping["upstream_path"] if direct_source_mapping is not None else None
                     ),
                     "direct_source_mapping": direct_source_mapping,
+                    "generated_mapping": generated_mapping_for_artifact(configured_mappings, after.name, relative_path),
                 }
             )
 
@@ -598,9 +656,13 @@ def create_release_text_diffs(
 
         upstream_groups: dict[tuple[str, str, str, str, str], list[dict]] = {}
         binary_only_candidates = []
+        generated_candidates = []
         for candidate in text_candidates:
             mapping = candidate["root_source_mapping"] or candidate["direct_source_mapping"]
             if mapping is None:
+                if candidate["generated_mapping"] is not None:
+                    generated_candidates.append(candidate)
+                    continue
                 binary_only_candidates.append(candidate)
                 continue
             mapping_kind = (
@@ -646,6 +708,32 @@ def create_release_text_diffs(
             for candidate in candidates:
                 candidate["upstream_diff"] = relative_diff
             total_upstream_diffs += 1
+        for candidate in generated_candidates:
+            mapping = candidate["generated_mapping"]
+            upstream = {
+                "github_repository": mapping["github_repository"],
+                "repository": mapping["repository"],
+                "selection": "generated-artifact",
+            }
+            diff = output / "generated_diffs" / generated_diff_filename(
+                upstream, after_release, generated_sequences, "generated-template-substitution"
+            )
+            write_unified_diff(diff, candidate["path"], candidate["before_path"], candidate["after_path"])
+            template_diff = output / "template_diffs" / generated_diff_filename(
+                upstream, after_release, template_sequences, "template-changes"
+            )
+            template_diff.parent.mkdir(parents=True, exist_ok=True)
+            template_diff.write_bytes(diff.read_bytes())
+            candidate["generated_diff"] = str(diff.relative_to(output))
+            candidate["template_diff"] = str(template_diff.relative_to(output))
+            candidate["generated"] = {
+                "type": mapping["derivation"]["type"],
+                "source": mapping["derivation"].get("source"),
+                "substitutions": mapping["derivation"].get("substitutions"),
+                "reason": "package template substitution; not an upstream source patch",
+            }
+            total_generated_diffs += 1
+            total_template_diffs += 1
         for candidate in binary_only_candidates:
             diff = output / "binary_only_diffs" / generated_diff_filename(
                 candidate["upstream"], after_release, binary_only_sequences, "orphan-changes"
@@ -688,6 +776,8 @@ def create_release_text_diffs(
                 "text_artifacts": total_text_artifacts,
                 "binary_package_diffs": total_binary_package_diffs,
                 "binary_only_diffs": total_binary_only_diffs,
+                "generated_diffs": total_generated_diffs,
+                "template_diffs": total_template_diffs,
                 "upstream_diffs": total_upstream_diffs,
                 "excluded_by_source_extractor_filters": total_excluded_by_filters,
                 "skipped_packages": skipped,

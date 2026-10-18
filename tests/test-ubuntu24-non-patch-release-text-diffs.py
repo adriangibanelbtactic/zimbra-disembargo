@@ -133,6 +133,8 @@ with tempfile.TemporaryDirectory() as temporary_directory:
         after_individual.mkdir(parents=True)
         (before_individual / "individual.txt").write_text("before\n", encoding="utf-8")
         (after_individual / "individual.txt").write_text("after\n", encoding="utf-8")
+        (before_individual / "generated.xml").write_text("<version>before</version>\n", encoding="utf-8")
+        (after_individual / "generated.xml").write_text("<version>after</version>\n", encoding="utf-8")
         return inspection, []
 
     definitions = temporary / "definitions"
@@ -148,6 +150,16 @@ with tempfile.TemporaryDirectory() as temporary_directory:
                         "package": "zimbra-example",
                         "artifact": "etc/individual.txt",
                         "source-roots": ["WebRoot/public"],
+                    },
+                    {
+                        "package": "zimbra-example",
+                        "artifact": "etc/generated.xml",
+                        "source-roots": ["WebRoot/WEB-INF"],
+                        "derivation": {
+                            "type": "template-substitution",
+                            "source": "WebRoot/WEB-INF/web.xml",
+                            "substitutions": {"@version@": "generated release value"},
+                        },
                     },
                 ],
             }
@@ -179,6 +191,11 @@ with tempfile.TemporaryDirectory() as temporary_directory:
         "zimbra-example",
         "usr/share/unmapped.txt",
     ) is None
+    generated_mapping = module.generated_mapping_for_artifact(
+        module.source_extractor_mappings(definitions), "zimbra-example", "etc/generated.xml"
+    )
+    assert generated_mapping is not None
+    assert generated_mapping["derivation"]["source"] == "WebRoot/WEB-INF/web.xml"
     assert module.upstream_for_artifact(module.source_extractor_mappings(definitions), "zimbra-example", "usr/share/unmapped.txt") == {
         "github_repository": "Example/example",
         "repository": "example",
@@ -197,20 +214,23 @@ with tempfile.TemporaryDirectory() as temporary_directory:
     report = json.loads((output / "text-artifacts.json").read_text(encoding="utf-8"))
     assert output.name == "10.1.21"
     assert manifest["comparisons"] == 2
-    assert manifest["text_artifacts"] == 12
+    assert manifest["text_artifacts"] == 14
     assert manifest["binary_package_diffs"] == 6
     assert manifest["binary_only_diffs"] == 4
+    assert manifest["generated_diffs"] == 2
+    assert manifest["template_diffs"] == 2
     assert manifest["upstream_diffs"] == 4
     assert manifest["excluded_by_source_extractor_filters"] == 2
     assert manifest["skipped_packages"] == skipped
-    assert all(len(item["text_artifacts"]) == 6 for item in report["comparisons"])
+    assert all(len(item["text_artifacts"]) == 7 for item in report["comparisons"])
     paths = {item["path"] for item in report["comparisons"][0]["text_artifacts"]}
     assert paths == {
-        "etc/individual.txt", "opt/zimbra/added.json", "opt/zimbra/changed.txt", "opt/zimbra/removed.conf",
+        "etc/generated.xml", "etc/individual.txt", "opt/zimbra/added.json", "opt/zimbra/changed.txt", "opt/zimbra/removed.conf",
         "usr/share/second.txt", "usr/share/unmapped.txt",
     }
     groups = report["comparisons"][0]["directory_diff_groups"]
     assert {(group["grouping"], group["directory"], tuple(group["artifacts"])) for group in groups} == {
+        ("parent-directory", "etc", ("etc/generated.xml", "etc/individual.txt")),
         ("parent-directory", "usr/share", ("usr/share/second.txt", "usr/share/unmapped.txt")),
         ("source-extractor-artifact-root", "opt/zimbra", ("opt/zimbra/added.json", "opt/zimbra/changed.txt", "opt/zimbra/removed.conf")),
     }
@@ -249,6 +269,17 @@ with tempfile.TemporaryDirectory() as temporary_directory:
     assert artifacts_by_path["etc/individual.txt"]["upstream_path"] == "WebRoot/public/individual.txt"
     assert artifacts_by_path["etc/individual.txt"]["upstream_diff"] is not None
     assert artifacts_by_path["etc/individual.txt"]["binary_only_diff"] is None
+    generated = artifacts_by_path["etc/generated.xml"]
+    assert generated["generated_diff"] is not None
+    assert generated["template_diff"] is not None
+    assert generated["binary_only_diff"] is None
+    assert generated["upstream_diff"] is None
+    assert generated["generated"]["source"] == "WebRoot/WEB-INF/web.xml"
+    assert len(list((output / "generated_diffs").glob("*.diff"))) == 2
+    template_diffs = list((output / "template_diffs").glob("*.diff"))
+    assert len(template_diffs) == 2
+    assert all("-template-changes_" in diff.name for diff in template_diffs)
+    assert (output / generated["generated_diff"]).read_bytes() == (output / generated["template_diff"]).read_bytes()
     assert len(list((output / "binary_only_diffs").glob("*.diff"))) == 4
     assert all("-orphan-changes_" in diff.name for diff in (output / "binary_only_diffs").glob("*.diff"))
     assert all("-upstream-changes_" in diff.name for diff in (output / "upstream_diffs").glob("*.diff"))
