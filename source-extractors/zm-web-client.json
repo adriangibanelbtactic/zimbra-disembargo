@@ -151,6 +151,28 @@
     },
     {
       "package": "zimbra-mbox-webclient-war",
+      "artifact": "opt/zimbra/jetty_base/webapps/zimbra/js/Startup1_2_all.js",
+      "derivation": {
+        "type": "ajx-package-bundle",
+        "manifest": "WebRoot/js/zimbraMail/package/Startup1_2.js",
+        "template-substitution": {
+          "source": "WebRoot/js/zimbraMail/share/model/ZmSettings.js",
+          "substitutions": {
+            "@buildDateTime@": "release-specific client build date and time",
+            "@buildRelease@": "release-specific client build release",
+            "@buildVersion@": "release-specific client build version"
+          }
+        }
+      },
+      "source-roots": [
+        "WebRoot/js/zimbraMail"
+      ],
+      "source-suffixes": [
+        ".js"
+      ]
+    },
+    {
+      "package": "zimbra-mbox-webclient-war",
       "artifact": "opt/zimbra/jetty_base/webapps/zimbra/js/zimbraMail/core/ZmMimeTable.js",
       "source-roots": [
         "WebRoot/js/zimbraMail/core"
