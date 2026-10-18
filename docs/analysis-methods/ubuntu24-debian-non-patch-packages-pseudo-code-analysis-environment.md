@@ -196,6 +196,137 @@ script also verifies the selected package name, version, and architecture.
 Inventories exclude symlinks and identify byte changes only. They neither
 classify material as pseudo-code nor establish a semantic change.
 
+### Release text-diff report
+
+To produce one review folder containing every retained, non-patch **textual**
+payload diff for an explicit release pair, run:
+
+```sh
+scripts/ubuntu24-debian-non-patch-packages-pseudo-code-analysis \
+  release-text-diffs 10.1.21
+```
+
+Unlike the lower-level commands, `release-text-diffs` owns the container for
+the duration of its run. It first removes a same-named analysis container left
+by another checkout or worktree, starts one using the current checkout's bind
+mounts (building the image if needed), and removes it when the command exits,
+including after an error. Do not run it while another analysis operation needs
+that fixed-name container.
+
+The command rebuilds the selected-series non-patch catalogue, then selects every
+package build whose Debian version starts with the requested after-release label.
+When only the target release is supplied, it selects the highest retained numeric
+`X.Y.Z` release below it as the baseline (`10.1.20` for `10.1.21`). Supply both
+labels to select the baseline explicitly:
+
+```sh
+scripts/ubuntu24-debian-non-patch-packages-pseudo-code-analysis \
+  release-text-diffs 10.1.20 10.1.21
+```
+
+Each target build is compared with the newest retained build of the same package
+whose version starts with the selected before-release label. It does not fall
+back to another release: packages without an exact retained before build are
+recorded as skipped in the report.
+
+The command prints a unique output directory such as:
+
+```text
+var/ubuntu24-debian-non-patch-packages-pseudo-code-analysis/results/
+  release-text-diffs/10.1.21/
+```
+
+`original_binary_packages_diffs/` contains every unified package-payload `.diff`,
+including added and removed files. Source extractor mappings that define an
+`artifact-root` combine every changed text artifact below that directory into
+one diff; paths without such a mapping are combined when two or more changed
+text artifacts share the same direct payload directory. An unmapped directory
+with only one changed text artifact retains one diff per file.
+
+`upstream_diffs/` contains mappings with both `artifact-root` and `source-root`,
+plus direct `artifact` mappings with a non-empty `source-roots` list and no
+`derivation`. An `ajx-package-bundle` derivation is also reconstructed when every
+package before-side hunk has exactly one match in the modules required by its
+configured package manifest at the public baseline tag. For each file below a directory root, the diff labels are rewritten
+deterministically from the installed path to the corresponding upstream path.
+For a qualifying direct artifact, the installed directory is discarded and the
+artifact filename is appended to its configured source root. For example,
+`opt/zimbra/jetty_base/webapps/zimbra/public/login.jsp` with source root
+`WebRoot/public` becomes `before/WebRoot/public/login.jsp` and
+`after/WebRoot/public/login.jsp`. A source root that already names the artifact
+file is used directly. This is the patch-ready representation for that upstream
+repository.
+
+Mappings may declare `upstream-deduplication` metadata with an `alias-group`
+and non-negative `priority`. Use one alias group only for installed artifacts
+known to expose the same upstream source hunks, such as directly installed
+JavaScript modules and the `_all.js` bundles that contain them. Direct modules
+normally use a lower priority than their generated bundle aliases. A bundle is
+processed after its direct counterpart and after lower-priority bundles; within
+the same priority, its installed artifact path gives a stable order.
+
+For aliases in the same group, the first reconstructed source hunk is canonical
+only when the upstream repository, source path, and before-side lines agree.
+Hunk line ranges are not compared because a package copy can have extra earlier
+lines while containing the same source change. A later alias with identical
+after-side lines is recorded as a
+suppressed alias in `text-artifacts.json` and does not create a second upstream
+diff. A later alias with different after-side lines is retained in
+`upstream_diffs_alias_conflicts/`; its artifact record links both that variant
+and the earlier canonical diff. Therefore `upstream_diffs/` remains the clean,
+canonical patch set, while `upstream_diffs_alias_conflicts/` preserves competing
+evidence for review rather than silently replacing the first result.
+
+As a backstop for older mappings that do not yet declare this metadata, exact
+source-hunk duplicates from the same upstream repository are also emitted only
+once. The automatic rule never classifies different after-side lines as a
+conflict; only a declared alias group can place such a variant in
+`upstream_diffs_alias_conflicts/`.
+
+`template_diffs/` contains raw installed-path evidence for an explicitly
+declared `template-substitution` derivation, including matching hunks found in
+an Ajx bundle. These changes are not rewritten as upstream patches: the package
+contains a build-substituted value while the public baseline contains the
+declared source-template token. The artifact record names that source template,
+the token(s), and its generated-only classification. The
+`*-template-changes_###.diff` files are the sole template-substitution evidence;
+there is no duplicate `generated_diffs/` representation.
+
+`binary_only_diffs/` contains one raw installed-path diff for every remaining
+text artifact that has no applicable deterministic mapping. This includes direct
+artifacts with a non-template derivation, direct artifacts without source roots,
+artifact-root-only mappings, and unmapped package artifacts.
+
+Each filename encodes the mapped upstream GitHub repository, target release,
+representation, and a zero-padded sequence. For example,
+`binary_only_diffs/zm-web-client-10.1.21-orphan-changes_001.diff`,
+`template_diffs/zm-web-client-10.1.21-template-changes_001.diff`, and
+`upstream_diffs/zm-web-client-10.1.21-upstream-changes_001.diff` cannot share a
+basename even when they describe the same component. Exact package builds,
+installed paths, grouping, source-root substitutions, and the upstream-mapping
+basis remain in `text-artifacts.json`; they are deliberately not encoded in the
+filename. An exact artifact mapping takes precedence over an `artifact-root`
+for package grouping; otherwise, the package's mapped repository with the most
+artifact mappings is used. An artifact from a package with no source-extractor
+mapping is retained with its `unmapped-<package>` repository label, with that
+status recorded in `text-artifacts.json` rather than guessing an upstream
+repository. `manifest.json` records the exact release selection, per-category
+diff totals, and packages skipped because the requested before release was not
+retained. An existing output folder is never overwritten; a later run receives
+a numeric suffix.
+
+Text classification uses `file(1)`: all available sides must be recognised as
+`text/*` or a recognised textual application format (JavaScript, JSON, XML, or
+PHP). This is an artifact filter, not proof that a file is source code or that a
+change is security relevant. Packages are downloaded and extracted only; they
+are never installed.
+
+Before text classification, the report also applies every `filter-negative`
+pattern shared by all source extractor definitions. In particular, the
+definition-level compulsory `.java` rule excludes every payload path ending in
+`.java`, including generated Java files outside an extractor's mapped artifact
+root. The report manifest records the shared filters and exclusion count.
+
 ## Deterministic source extractors
 
 A source extractor correlates an existing package inspection with explicitly
@@ -264,11 +395,14 @@ artifact. A matching `artifact-root` / `source-root` mapping also includes every
 baseline-source-backed artifact below that root, including removed files.
 Within that scope, suffix filters apply: `filter-positive` is an
 allow-list and `filter-negative` is a deny-list. The default negative suffixes
-are `.jar`, `.class`, `.java`, `ZaMsg*properties`, `ZsMsg*properties`, and
-`.zgz`. The `ZaMsg*properties` and `ZsMsg*properties` filename globs exclude
-translated Admin Console and mailbox message resources without excluding other
-properties files. New extractor definitions must retain both exclusions when
-they specify `filter-negative`; omitting that field inherits the default list.
+are `.jar`, `.class`, `.java`, `AjxMsg*properties`, `ZaMsg*properties`,
+`ZhMsg*properties`, `ZmMsg*properties`, `ZsMsg*properties`, and `.zgz`. The
+five `*Msg*properties` filename globs exclude translated message resources
+without excluding other properties files. `.java` is a mandatory global
+exclusion: every current and future source extractor excludes Java artifacts,
+so every definition must explicitly include `.java` in `filter-negative`.
+New extractor definitions must also retain all five message-resource exclusions
+there.
 The `zm-ajax` definition deliberately has an empty positive filter. Added files
 have no before-side text and cannot be reconstructed, so they are counted in
 the extraction manifest but have no entry in the unmatched-hunk report. Removed
